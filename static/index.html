@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transmit — SMTP Mailer</title>
+<link rel="icon" type="image/png" href="/static/smtpmailer.png">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0a0f;
+  --bg2: #111118;
+  --bg3: #1a1a24;
+  --surface: #1e1e2a;
+  --surface2: #25253a;
+  --border: rgba(255,255,255,0.07);
+  --border2: rgba(255,255,255,0.12);
+  --accent: #6c63ff;
+  --accent2: #a78bfa;
+  --green: #22d3a3;
+  --red: #f87171;
+  --amber: #fbbf24;
+  --text: #f0f0f8;
+  --muted: #8888a8;
+  --muted2: #555570;
+  --mono: 'DM Mono', monospace;
+  --sans: 'Syne', sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); overflow: hidden; }
+
+/* Layout */
+.shell { display: grid; grid-template-columns: 260px 1fr; grid-template-rows: 56px 1fr; height: 100vh; }
+.topbar { grid-column: 1 / -1; display: flex; align-items: center; padding: 0 24px; border-bottom: 1px solid var(--border); background: var(--bg); gap: 12px; position: relative; z-index: 10; }
+.topbar-logo { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; color: var(--text); }
+.topbar-logo span { color: var(--accent2); }
+.topbar-tagline { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-left: 8px; opacity: 0.7; }
+.topbar-spacer { flex: 1; }
+.topbar-status { font-size: 11px; font-family: var(--mono); color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted2); transition: all 0.3s; }
+.status-dot.active { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite; }
+
+/* Sidebar */
+.sidebar { background: var(--bg2); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+.sidebar-section { padding: 16px; border-bottom: 1px solid var(--border); }
+.sidebar-label { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted2); font-family: var(--mono); margin-bottom: 10px; }
+.nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--muted); transition: all 0.15s; margin-bottom: 2px; border: 1px solid transparent; }
+.nav-item:hover { background: var(--surface); color: var(--text); }
+.nav-item.active { background: var(--surface); color: var(--text); border-color: var(--border2); }
+.nav-item svg { width: 15px; height: 15px; flex-shrink: 0; opacity: 0.7; }
+.nav-item.active svg { opacity: 1; }
+.nav-badge { margin-left: auto; background: var(--accent); color: #fff; font-size: 9px; font-family: var(--mono); padding: 2px 6px; border-radius: 20px; }
+
+.profile-list { flex: 1; overflow-y: auto; padding: 8px; }
+.profile-card { padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; border: 1px solid var(--border); background: var(--bg3); transition: all 0.15s; }
+.profile-card:hover { border-color: var(--border2); background: var(--surface); }
+.profile-card.selected { border-color: var(--accent); background: rgba(108,99,255,0.08); }
+.profile-name { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 3px; }
+.profile-meta { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+.profile-actions { display: flex; gap: 4px; margin-top: 6px; }
+.btn-micro { font-size: 10px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; font-family: var(--mono); transition: all 0.15s; }
+.btn-micro:hover { color: var(--text); background: var(--surface2); }
+.btn-micro.danger:hover { color: var(--red); border-color: var(--red); }
+
+/* Main content */
+.main { overflow-y: auto; background: var(--bg); }
+.panel { display: none; padding: 32px; max-width: 860px; animation: fadeIn 0.25s ease; }
+.panel.active { display: block; }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pulse { 0%,100% { box-shadow: 0 0 6px var(--green); } 50% { box-shadow: 0 0 14px var(--green); } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Typography */
+h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.8px; margin-bottom: 4px; }
+h2 { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; margin-bottom: 16px; }
+h3 { font-size: 13px; font-weight: 600; letter-spacing: 0.3px; color: var(--muted); text-transform: uppercase; font-family: var(--mono); margin-bottom: 12px; }
+.subtitle { font-size: 13px; color: var(--muted); margin-bottom: 28px; }
+
+/* Form elements */
+.form-group { margin-bottom: 18px; }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+label { display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: var(--muted); text-transform: uppercase; font-family: var(--mono); margin-bottom: 6px; }
+input[type=text], input[type=password], input[type=number], input[type=email], select, textarea {
+  width: 100%; background: var(--surface); border: 1px solid var(--border2); border-radius: 8px;
+  color: var(--text); font-family: var(--mono); font-size: 13px; padding: 10px 14px;
+  outline: none; transition: all 0.15s;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(108,99,255,0.12); }
+select option { background: var(--bg2); }
+textarea { resize: vertical; min-height: 160px; line-height: 1.6; }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; font-family: var(--sans); font-size: 13px; font-weight: 600; transition: all 0.15s; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #7c74ff; transform: translateY(-1px); }
+.btn-primary:active { transform: translateY(0); }
+.btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border2); }
+.btn-ghost:hover { background: var(--surface); color: var(--text); }
+.btn-danger { background: transparent; color: var(--red); border: 1px solid rgba(248,113,113,0.3); }
+.btn-danger:hover { background: rgba(248,113,113,0.1); }
+.btn-success { background: rgba(34,211,163,0.12); color: var(--green); border: 1px solid rgba(34,211,163,0.2); }
+.btn-success:hover { background: rgba(34,211,163,0.2); }
+.btn svg { width: 15px; height: 15px; }
+
+/* Cards */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+.card-sm { background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+
+/* Stats row */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+.stat { background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.stat-val { font-size: 28px; font-weight: 800; font-family: var(--mono); letter-spacing: -1px; }
+.stat-val.green { color: var(--green); }
+.stat-val.red { color: var(--red); }
+.stat-val.accent { color: var(--accent2); }
+.stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-family: var(--mono); margin-top: 4px; }
+
+/* Provider grid */
+.provider-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
+.provider-chip { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg3); cursor: pointer; font-size: 11px; font-weight: 600; color: var(--muted); transition: all 0.15s; text-align: center; font-family: var(--mono); }
+.provider-chip:hover { border-color: var(--border2); color: var(--text); background: var(--surface); }
+.provider-chip.selected { border-color: var(--accent); background: rgba(108,99,255,0.1); color: var(--accent2); }
+
+/* Recipients */
+.recipients-tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+.tab { padding: 7px 16px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--muted); font-family: var(--sans); font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+.tab.active { background: var(--surface); color: var(--text); border-color: var(--border2); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+.recipient-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; margin-top: 12px; }
+.recipient-table th { text-align: left; padding: 8px 12px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); }
+.recipient-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--text); }
+.recipient-table tr:last-child td { border: none; }
+.recipient-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* Upload zone */
+.drop-zone { border: 2px dashed var(--border2); border-radius: 10px; padding: 32px; text-align: center; cursor: pointer; transition: all 0.2s; }
+.drop-zone:hover, .drop-zone.drag { border-color: var(--accent); background: rgba(108,99,255,0.05); }
+.drop-zone p { color: var(--muted); font-size: 13px; margin-top: 8px; }
+.drop-zone strong { color: var(--accent2); }
+
+/* Live log */
+.log-box { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px; font-family: var(--mono); font-size: 12px; height: 320px; overflow-y: auto; }
+.log-line { padding: 3px 0; line-height: 1.5; animation: slideUp 0.2s ease; }
+.log-line .ts { color: var(--muted2); margin-right: 10px; }
+.log-line.sent .msg { color: var(--green); }
+.log-line.fail .msg { color: var(--red); }
+.log-line.info .msg { color: var(--accent2); }
+.log-line.warn .msg { color: var(--amber); }
+.log-line.done .msg { color: var(--green); font-weight: 500; }
+.log-line.error .msg { color: var(--red); font-weight: 500; }
+.log-line.success .msg { color: var(--green); }
+
+/* Progress bar */
+.progress-wrap { background: var(--bg3); border-radius: 6px; height: 6px; overflow: hidden; margin: 16px 0; }
+.progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 6px; transition: width 0.4s ease; width: 0%; }
+
+/* Preview */
+.preview-frame { background: #fff; border-radius: 10px; min-height: 200px; padding: 20px; color: #111; font-family: sans-serif; font-size: 14px; line-height: 1.6; border: 1px solid var(--border); }
+.preview-meta { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-bottom: 10px; display: flex; gap: 20px; }
+.preview-meta span { display: flex; gap: 6px; }
+.preview-meta strong { color: var(--text); }
+
+/* Email format switch */
+.format-switch { display: flex; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 3px; gap: 2px; margin-bottom: 16px; width: fit-content; }
+.format-btn { padding: 6px 16px; border-radius: 6px; border: none; background: transparent; color: var(--muted); cursor: pointer; font-family: var(--sans); font-size: 12px; font-weight: 600; transition: all 0.15s; }
+.format-btn.active { background: var(--surface2); color: var(--text); }
+
+/* Notification */
+.toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: 10px; font-size: 13px; font-weight: 600; z-index: 1000; animation: slideUp 0.3s ease; border: 1px solid; }
+.toast.ok { background: rgba(34,211,163,0.12); color: var(--green); border-color: rgba(34,211,163,0.3); }
+.toast.err { background: rgba(248,113,113,0.1); color: var(--red); border-color: rgba(248,113,113,0.3); }
+.toast.info { background: rgba(108,99,255,0.1); color: var(--accent2); border-color: rgba(108,99,255,0.3); }
+
+/* Last campaign banner */
+.last-campaign { background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; padding: 14px 20px; display: flex; align-items: center; gap: 16px; margin-bottom: 24px; font-size: 12px; font-family: var(--mono); }
+.lc-sent { color: var(--green); font-weight: 600; }
+.lc-failed { color: var(--red); }
+.lc-label { color: var(--muted2); margin-right: 4px; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 4px; }
+
+.section-divider { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+.tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-family: var(--mono); font-weight: 500; }
+.tag.ssl { background: rgba(34,211,163,0.1); color: var(--green); }
+.tag.tls { background: rgba(108,99,255,0.1); color: var(--accent2); }
+.empty-state { text-align: center; padding: 48px 20px; color: var(--muted); }
+.empty-state svg { width: 48px; height: 48px; margin: 0 auto 16px; display: block; opacity: 0.2; }
+.empty-state p { font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="topbar-logo">TRANS<span>MIT</span></div>
+    <div class="topbar-tagline">SMTP Campaign Engine</div>
+    <div class="topbar-spacer"></div>
+    <div class="topbar-status">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Ready</span>
+    </div>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Navigation</div>
+      <div class="nav-item active" onclick="navigate('dashboard')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Dashboard
+      </div>
+      <div class="nav-item" onclick="navigate('compose')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+        New Campaign
+      </div>
+      <div class="nav-item" onclick="navigate('send')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        Send
+        <span class="nav-badge" id="recipientBadge" style="display:none">0</span>
+      </div>
+      <div class="nav-item" onclick="navigate('credentials')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        Credentials
+      </div>
+    </div>
+
+    <div class="sidebar-section" style="flex:1;overflow:hidden;display:flex;flex-direction:column;border-bottom:none;">
+      <div class="sidebar-label">Saved Profiles</div>
+      <div class="profile-list" id="profileList">
+        <div class="empty-state" style="padding:24px 8px;">
+          <p>No profiles yet</p>
+        </div>
+      </div>
+      <div style="padding:8px;">
+        <button class="btn btn-ghost" style="width:100%;justify-content:center;font-size:12px;" onclick="navigate('compose')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          New Profile
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <!-- Dashboard -->
+    <div class="panel active" id="panel-dashboard">
+      <h1>Dashboard</h1>
+      <p class="subtitle">Your SMTP campaign control center</p>
+
+      <div id="lastCampaignBanner" style="display:none" class="last-campaign">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:16px;height:16px;flex-shrink:0;color:var(--muted)"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <span class="lc-label">Last campaign</span>
+        <strong id="lcProfile"></strong>
+        <span class="lc-label">—</span>
+        <span class="lc-sent" id="lcSent"></span>
+        <span class="lc-failed" id="lcFailed"></span>
+        <span class="lc-label" id="lcTime"></span>
+      </div>
+
+      <div class="stats" id="dashStats">
+        <div class="stat">
+          <div class="stat-val accent" id="dStatProfiles">0</div>
+          <div class="stat-label">Profiles</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="dStatRecipients">0</div>
+          <div class="stat-label">Loaded</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val green" id="dStatSent">—</div>
+          <div class="stat-label">Last Sent</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val red" id="dStatFailed">—</div>
+          <div class="stat-label">Last Failed</div>
+        </div>
+      </div>
+
+      <h2>Saved Profiles</h2>
+      <div id="dashProfileCards"></div>
+
+      <div style="text-align:center;padding:24px 0;">
+        <button class="btn btn-primary" onclick="navigate('compose')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Create New Campaign
+        </button>
+      </div>
+    </div>
+
+    <!-- Compose / New Profile -->
+    <div class="panel" id="panel-compose">
+      <h1 id="composeTitle">New Campaign</h1>
+      <p class="subtitle">Configure your SMTP settings and message</p>
+
+      <div class="card">
+        <h3>SMTP Provider</h3>
+        <div class="provider-grid" id="providerGrid"></div>
+        <div id="customSmtpFields" style="display:none">
+          <div class="form-row">
+            <div class="form-group"><label>Host</label><input type="text" id="customHost" placeholder="smtp.example.com"></div>
+            <div class="form-group"><label>Port</label><input type="number" id="customPort" value="587"></div>
+          </div>
+          <div class="form-group">
+            <label>Security</label>
+            <select id="customSecurity">
+              <option value="STARTTLS">STARTTLS</option>
+              <option value="SSL">SSL</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Authentication</h3>
+        <div class="form-row">
+          <div class="form-group"><label>Username</label><input type="text" id="smtpUser" placeholder="you@example.com"></div>
+          <div class="form-group"><label>Password / API Key</label><input type="password" id="smtpPass" placeholder="••••••••••••"></div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);">
+          <input type="checkbox" id="saveCredentials" checked style="width:auto;">
+          <label for="saveCredentials" style="text-transform:none;letter-spacing:0;color:var(--muted);font-size:12px;cursor:pointer;">Save credentials in profile</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Sender Identity</h3>
+        <div class="form-row">
+          <div class="form-group"><label>Sender Name</label><input type="text" id="senderName" placeholder="PayPal Support"></div>
+          <div class="form-group"><label>Sender Email</label><input type="email" id="senderEmail" placeholder="support@paypal.com"></div>
+        </div>
+        <div class="form-group"><label>Subject</label><input type="text" id="emailSubject" placeholder="Your account update"></div>
+      </div>
+
+      <div class="card">
+        <h3>Message Body</h3>
+        <div class="format-switch">
+          <button class="format-btn active" onclick="setFormat('html',this)">HTML</button>
+          <button class="format-btn" onclick="setFormat('plain',this)">Plain Text</button>
+        </div>
+        <div class="form-group">
+          <label>Template</label>
+          <textarea id="emailBody" placeholder="Use {{.FirstName}}, {{.LastName}}, {{.Email}} as placeholders"></textarea>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
+          <button class="btn btn-ghost" onclick="showPreview()" style="font-size:12px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            Preview
+          </button>
+          <span style="font-size:11px;color:var(--muted);font-family:var(--mono);">Supports {{.FirstName}} {{.LastName}} {{.Email}}</span>
+        </div>
+        <div id="previewBox" style="display:none;margin-top:16px;">
+          <div class="preview-meta">
+            <span><strong>To:</strong> <span id="prevTo"></span></span>
+            <span><strong>Subject:</strong> <span id="prevSubj"></span></span>
+          </div>
+          <div class="preview-frame" id="prevBody"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Sending Options</h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Delay Between Emails</label>
+            <input type="text" id="sendDelay" value="1" placeholder="1  or  2-5 (range in seconds)">
+          </div>
+          <div class="form-group">
+            <label>Profile Name</label>
+            <input type="text" id="profileName" placeholder="Auto-generated if blank">
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:12px;">
+        <button class="btn btn-primary" onclick="saveProfile()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          Save Profile
+        </button>
+        <button class="btn btn-success" onclick="saveAndGoToSend()">
+          Save & Load Recipients →
+        </button>
+        <button class="btn btn-ghost" onclick="clearCompose()">Clear</button>
+      </div>
+    </div>
+
+    <!-- Recipients / Send -->
+    <div class="panel" id="panel-send">
+      <h1>Send Campaign</h1>
+      <p class="subtitle">Load recipients and fire your campaign</p>
+
+      <div class="card">
+        <h3>Active Profile</h3>
+        <div id="activeProfileInfo" style="font-size:13px;color:var(--muted);font-family:var(--mono);">
+          No profile loaded — <a href="#" onclick="navigate('compose');return false;" style="color:var(--accent2);">create one first</a>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Recipients</h3>
+        <div class="recipients-tabs">
+          <button class="tab active" onclick="switchRecipientTab('csv',this)">Upload CSV</button>
+          <button class="tab" onclick="switchRecipientTab('paste',this)">Paste Emails</button>
+          <button class="tab" onclick="switchRecipientTab('single',this)">Single Email</button>
+        </div>
+
+        <div class="tab-panel active" id="tab-csv">
+          <div class="drop-zone" id="dropZone" onclick="document.getElementById('csvFile').click()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:36px;height:36px;margin:0 auto 8px;display:block;color:var(--accent2)"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <p>Drop a <strong>CSV file</strong> here or click to browse</p>
+            <p style="font-size:11px;font-family:var(--mono);margin-top:6px;color:var(--muted2);">Required columns: FirstName, LastName, Email</p>
+          </div>
+          <input type="file" id="csvFile" accept=".csv" style="display:none" onchange="uploadCSV(this)">
+        </div>
+
+        <div class="tab-panel" id="tab-paste">
+          <div class="form-group">
+            <label>Email addresses (comma or newline separated)</label>
+            <textarea id="pasteEmails" placeholder="alice@example.com&#10;bob@example.com&#10;carol@example.com" style="min-height:120px;"></textarea>
+          </div>
+          <button class="btn btn-ghost" onclick="parsePaste()" style="font-size:12px;">Parse Emails</button>
+        </div>
+
+        <div class="tab-panel" id="tab-single">
+          <div class="form-row">
+            <div class="form-group"><label>Email Address</label><input type="email" id="singleEmail" placeholder="target@example.com"></div>
+          </div>
+          <button class="btn btn-ghost" onclick="parseSingle()" style="font-size:12px;">Add Recipient</button>
+        </div>
+
+        <div id="recipientPreview" style="display:none;margin-top:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span style="font-size:12px;font-family:var(--mono);color:var(--muted);" id="recipientCount"></span>
+            <button class="btn-micro" onclick="clearRecipients()">Clear</button>
+          </div>
+          <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;">
+            <table class="recipient-table" id="recipientTable">
+              <thead><tr><th>#</th><th>First Name</th><th>Last Name</th><th>Email</th></tr></thead>
+              <tbody id="recipientBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="previewEmailCard" style="display:none;">
+        <h3>Email Preview (First Recipient)</h3>
+        <div class="preview-meta">
+          <span><strong>To:</strong> <span id="sendPrevTo"></span></span>
+          <span><strong>Subject:</strong> <span id="sendPrevSubj"></span></span>
+        </div>
+        <div class="preview-frame" id="sendPrevBody"></div>
+        <div style="margin-top:12px;">
+          <button class="btn btn-ghost" onclick="togglePreviewCard()" style="font-size:12px;">Hide Preview</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:12px;margin-top:4px;">
+        <button class="btn btn-ghost" onclick="showSendPreview()" style="font-size:12px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          Preview Email
+        </button>
+        <button class="btn btn-primary" onclick="startCampaign()" id="sendBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          Launch Campaign
+        </button>
+      </div>
+
+      <!-- Live sending log -->
+      <div id="campaignMonitor" style="display:none;margin-top:24px;">
+        <hr class="section-divider">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h2 style="margin:0;">Live Feed</h2>
+          <button class="btn btn-danger" onclick="stopCampaign()" id="stopBtn" style="font-size:12px;padding:6px 14px;">Stop</button>
+        </div>
+        <div style="display:flex;gap:16px;margin-bottom:12px;">
+          <div class="stat" style="flex:1;padding:12px;">
+            <div class="stat-val green" id="liveSent">0</div>
+            <div class="stat-label">Sent</div>
+          </div>
+          <div class="stat" style="flex:1;padding:12px;">
+            <div class="stat-val red" id="liveFailed">0</div>
+            <div class="stat-label">Failed</div>
+          </div>
+          <div class="stat" style="flex:1;padding:12px;">
+            <div class="stat-val" id="liveTotal">0</div>
+            <div class="stat-label">Total</div>
+          </div>
+          <div class="stat" style="flex:1;padding:12px;">
+            <div class="stat-val accent" id="livePct">0%</div>
+            <div class="stat-label">Progress</div>
+          </div>
+        </div>
+        <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
+        <div class="log-box" id="logBox"></div>
+        <div id="postCampaignActions" style="display:none;margin-top:16px;display:none;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-ghost" onclick="retryFailed()" id="retryBtn" style="font-size:12px;display:none;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+            Retry Failed
+          </button>
+          <button class="btn btn-ghost" onclick="newCampaignSameSettings()" style="font-size:12px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Send to New CSV
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Profile View Modal -->
+    <div id="profileModal" onclick="if(event.target===this)closeModal()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:200;align-items:center;justify-content:center;">
+      <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:16px;padding:32px;width:520px;max-width:90vw;max-height:80vh;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+          <h2 style="margin:0;font-size:18px;" id="modalTitle">Profile</h2>
+          <button onclick="closeModal()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:22px;line-height:1;">✕</button>
+        </div>
+        <div id="modalBody"></div>
+        <div style="margin-top:24px;display:flex;gap:10px;">
+          <button class="btn btn-primary" id="modalUseBtn">Use This Profile →</button>
+          <button class="btn btn-ghost" id="modalEditBtn">Edit</button>
+          <button class="btn btn-ghost" onclick="closeModal()">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Credentials -->
+    <div class="panel" id="panel-credentials">
+      <h1>Credentials</h1>
+      <p class="subtitle">Set global default credentials (used for Gmail profiles)</p>
+
+      <div class="card">
+        <h3>Default Gmail Credentials</h3>
+        <div class="form-row">
+          <div class="form-group"><label>Gmail Username</label><input type="email" id="dcUser" placeholder="noreply@gmail.com"></div>
+          <div class="form-group"><label>App Password</label><input type="password" id="dcPass" placeholder="xxxx xxxx xxxx xxxx"></div>
+        </div>
+        <button class="btn btn-primary" onclick="saveDefaultCreds()">Save Credentials</button>
+      </div>
+
+      <div class="card" style="margin-top:20px;">
+        <h3>About App Passwords</h3>
+        <p style="font-size:13px;color:var(--muted);line-height:1.7;">
+          Gmail requires an App Password if 2FA is enabled. Generate one at
+          <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:var(--accent2);">myaccount.google.com/apppasswords</a>.
+          Store it here to reuse across multiple profiles.
+        </p>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+const API = '';
+let providers = [];
+let recipients = [];
+let currentSettings = {};
+let selectedProvider = null;
+let emailFormat = 'html';
+let pollTimer = null;
+let editingProfile = null;
+let failedRecipients = [];
+let lastLogLen = 0;
+
+async function init() {
+  providers = await fetch(`${API}/api/providers`).then(r => r.json());
+  renderProviderGrid();
+  await refreshProfiles();
+  setupDropZone();
+}
+
+function navigate(panel) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById(`panel-${panel}`).classList.add('active');
+  const navMap = {dashboard:0,compose:1,send:2,credentials:3};
+  document.querySelectorAll('.nav-item')[navMap[panel]]?.classList.add('active');
+  if (panel === 'dashboard') refreshDashboard();
+  if (panel === 'send') refreshSendPanel();
+}
+
+async function refreshProfiles() {
+  const data = await fetch(`${API}/api/profiles`).then(r => r.json());
+  const profiles = data.profiles || {};
+  const names = Object.keys(profiles);
+
+  const listEl = document.getElementById('profileList');
+  if (names.length === 0) {
+    listEl.innerHTML = '<div class="empty-state" style="padding:24px 8px;"><p>No profiles yet</p></div>';
+    document.getElementById('dashProfileCards').innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg><p>No profiles saved yet. Create one to get started.</p></div>';
+    return;
+  }
+
+  listEl.innerHTML = names.map(name => {
+    const s = profiles[name];
+    return `<div class="profile-card" onclick="loadProfileForSend('${name}')">
+      <div class="profile-name">${name}</div>
+      <div class="profile-meta">${s.provider_name || ''} · ${s.sender_email || ''}</div>
+        <div class="profile-actions">
+        <button class="btn-micro" onclick="event.stopPropagation();viewProfileModal('${name}')">View</button>
+        <button class="btn-micro" onclick="event.stopPropagation();editProfile('${name}')">Edit</button>
+        <button class="btn-micro" onclick="event.stopPropagation();renameProfilePrompt('${name}')">Rename</button>
+        <button class="btn-micro danger" onclick="event.stopPropagation();deleteProfile('${name}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Dashboard profile cards
+  document.getElementById('dStatProfiles').textContent = names.length;
+  document.getElementById('dashProfileCards').innerHTML = names.map(name => {
+    const s = profiles[name];
+    const sec = s.security === 'SSL' ? '<span class="tag ssl">SSL</span>' : '<span class="tag tls">STARTTLS</span>';
+    return `<div class="card-sm" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <div>
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px;">${name}</div>
+        <div style="font-size:11px;font-family:var(--mono);color:var(--muted);">${s.provider_name||''} · ${s.host||''}:${s.port||''} · ${s.sender_email||''}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">${sec}
+        <button class="btn btn-primary" style="font-size:11px;padding:6px 14px;" onclick="loadProfileForSend('${name}')">Use</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Last campaign
+  if (data.last_campaign) {
+    const lc = data.last_campaign;
+    document.getElementById('lastCampaignBanner').style.display = 'flex';
+    document.getElementById('lcProfile').textContent = lc.profile;
+    document.getElementById('lcSent').textContent = `${lc.sent} sent`;
+    document.getElementById('lcFailed').textContent = lc.failed ? `· ${lc.failed} failed` : '';
+    document.getElementById('lcTime').textContent = lc.timestamp;
+    document.getElementById('dStatSent').textContent = lc.sent;
+    document.getElementById('dStatFailed').textContent = lc.failed;
+  }
+
+  if (data.default_credentials?.username) {
+    document.getElementById('dcUser').value = data.default_credentials.username;
+  }
+}
+
+async function refreshDashboard() {
+  await refreshProfiles();
+  document.getElementById('dStatRecipients').textContent = recipients.length;
+}
+
+function refreshSendPanel() {
+  if (currentSettings && currentSettings.sender_email) {
+    document.getElementById('activeProfileInfo').innerHTML = `
+      <strong style="color:var(--text)">${currentSettings._profileName || 'Loaded'}</strong>
+      <span style="color:var(--muted2)"> · </span>${currentSettings.provider_name||''} · ${currentSettings.sender_email}`;
+  }
+  updateRecipientBadge();
+}
+
+function renderProviderGrid() {
+  document.getElementById('providerGrid').innerHTML = providers.map((p, i) =>
+    `<div class="provider-chip" onclick="selectProvider(${i})">${p.name}</div>`
+  ).join('');
+}
+
+function selectProvider(i) {
+  selectedProvider = i;
+  document.querySelectorAll('.provider-chip').forEach((c, idx) => c.classList.toggle('selected', idx === i));
+  const p = providers[i];
+  const isCustom = p.host === null;
+  document.getElementById('customSmtpFields').style.display = isCustom ? 'block' : 'none';
+  if (!isCustom) {
+    currentSettings.host = p.host;
+    currentSettings.port = p.port;
+    currentSettings.security = p.security;
+    currentSettings.provider_name = p.name;
+  }
+}
+
+function setFormat(fmt, btn) {
+  emailFormat = fmt;
+  document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const ph = fmt === 'html'
+    ? '<p>Hi {{.FirstName}},</p>\n<p>This email is for {{.Email}}.</p>'
+    : 'Hi {{.FirstName}},\n\nThis email is for {{.Email}}.';
+  if (!document.getElementById('emailBody').value) {
+    document.getElementById('emailBody').placeholder = ph;
+  }
+}
+
+async function showPreview() {
+  const body = document.getElementById('emailBody').value || '<p>Hi {{.FirstName}},</p><p>This email is for {{.Email}}.</p>';
+  const subject = document.getElementById('emailSubject').value || '(no subject)';
+  const res = await fetch(`${API}/api/preview`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({body, subject, recipient: {FirstName:'Jane', LastName:'Doe', Email:'jane@example.com'}})
+  }).then(r => r.json());
+  document.getElementById('prevTo').textContent = 'Jane Doe <jane@example.com>';
+  document.getElementById('prevSubj').textContent = res.subject;
+  document.getElementById('prevBody').innerHTML = emailFormat === 'html' ? res.rendered : `<pre style="font-family:monospace;font-size:13px;white-space:pre-wrap;">${res.rendered}</pre>`;
+  document.getElementById('previewBox').style.display = 'block';
+}
+
+async function saveProfile() {
+  const settings = gatherSettings();
+  if (!settings) return;
+  const name = document.getElementById('profileName').value.trim() || `profile_${Date.now()}`;
+  const method = editingProfile ? 'PUT' : 'POST';
+  const url = editingProfile ? `${API}/api/profiles/${editingProfile}` : `${API}/api/profiles`;
+  await fetch(url, {
+    method, headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, settings, new_name: name})
+  });
+  toast(`Profile "${name}" saved`, 'ok');
+  editingProfile = null;
+  document.getElementById('composeTitle').textContent = 'New Campaign';
+  await refreshProfiles();
+}
+
+async function saveAndGoToSend() {
+  await saveProfile();
+  const name = document.getElementById('profileName').value.trim() || 'profile';
+  loadProfileForSend(name);
+  navigate('send');
+}
+
+function gatherSettings() {
+  const p = selectedProvider !== null ? providers[selectedProvider] : null;
+  let host, port, security, prov;
+  if (p && p.host) {
+    host = p.host; port = p.port; security = p.security; prov = p.name;
+  } else {
+    host = document.getElementById('customHost')?.value.trim();
+    port = parseInt(document.getElementById('customPort')?.value) || 587;
+    security = document.getElementById('customSecurity')?.value || 'STARTTLS';
+    prov = host ? `Custom (${host}:${port})` : '';
+  }
+  if (!host) { toast('Select an SMTP provider', 'err'); return null; }
+  const saveCreds = document.getElementById('saveCredentials').checked;
+  return {
+    provider_name: prov, host, port, security,
+    username: saveCreds ? document.getElementById('smtpUser').value.trim() : '',
+    password: saveCreds ? document.getElementById('smtpPass').value : '',
+    sender_name: document.getElementById('senderName').value.trim(),
+    sender_email: document.getElementById('senderEmail').value.trim(),
+    subject: document.getElementById('emailSubject').value.trim(),
+    email_format: emailFormat,
+    body: document.getElementById('emailBody').value,
+    delay: document.getElementById('sendDelay').value.trim() || '1',
+  };
+}
+
+function loadProfileForSend(name) {
+  fetch(`${API}/api/profiles`).then(r => r.json()).then(data => {
+    const s = data.profiles[name];
+    if (!s) return;
+    currentSettings = {...s, _profileName: name};
+    document.querySelectorAll('.profile-card').forEach(c => c.classList.remove('selected'));
+    navigate('send');
+    toast(`Profile "${name}" loaded`, 'info');
+    updateRecipientBadge();
+  });
+}
+
+function editProfile(name) {
+  fetch(`${API}/api/profiles`).then(r => r.json()).then(data => {
+    const s = data.profiles[name];
+    if (!s) return;
+    editingProfile = name;
+    document.getElementById('composeTitle').textContent = `Edit: ${name}`;
+    // Fill form
+    document.getElementById('profileName').value = name;
+    document.getElementById('smtpUser').value = s.username || '';
+    document.getElementById('smtpPass').value = s.password || '';
+    document.getElementById('senderName').value = s.sender_name || '';
+    document.getElementById('senderEmail').value = s.sender_email || '';
+    document.getElementById('emailSubject').value = s.subject || '';
+    document.getElementById('emailBody').value = s.body || s.body_text || '';
+    document.getElementById('sendDelay').value = s.delay || '1';
+    emailFormat = s.email_format || 'html';
+    // Select provider
+    const idx = providers.findIndex(p => p.name === s.provider_name);
+    if (idx >= 0) selectProvider(idx);
+    navigate('compose');
+  });
+}
+
+async function deleteProfile(name) {
+  if (!confirm(`Delete profile "${name}"?`)) return;
+  await fetch(`${API}/api/profiles/${name}`, {method:'DELETE'});
+  toast(`Deleted "${name}"`, 'ok');
+  await refreshProfiles();
+}
+
+async function renameProfilePrompt(name) {
+  const newName = prompt(`Rename "${name}" to:`, name);
+  if (!newName || newName === name) return;
+  await fetch(`${API}/api/profiles/rename`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({old_name: name, new_name: newName})
+  });
+  toast(`Renamed to "${newName}"`, 'ok');
+  await refreshProfiles();
+}
+
+function clearCompose() {
+  editingProfile = null;
+  document.getElementById('composeTitle').textContent = 'New Campaign';
+  ['smtpUser','smtpPass','senderName','senderEmail','emailSubject','emailBody','profileName'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('sendDelay').value = '1';
+  document.querySelectorAll('.provider-chip').forEach(c => c.classList.remove('selected'));
+  selectedProvider = null;
+  document.getElementById('customSmtpFields').style.display = 'none';
+  document.getElementById('previewBox').style.display = 'none';
+}
+
+// Recipients
+function switchRecipientTab(tab, btn) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(`tab-${tab}`).classList.add('active');
+}
+
+function setupDropZone() {
+  const dz = document.getElementById('dropZone');
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('drag');
+    const file = e.dataTransfer.files[0];
+    if (file) processCSV(file);
+  });
+}
+
+function uploadCSV(input) {
+  if (input.files[0]) processCSV(input.files[0]);
+}
+
+async function processCSV(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('mode', 'csv');
+  const data = await fetch(`${API}/api/parse-recipients`, {method:'POST', body: fd}).then(r => r.json());
+  if (data.error) { toast(data.error, 'err'); return; }
+  recipients = data.recipients;
+  renderRecipients(data.total, data.dupes);
+  toast(`${data.total} recipients loaded${data.dupes ? ` (${data.dupes} dupes removed)` : ''}`, 'ok');
+}
+
+async function parsePaste() {
+  const text = document.getElementById('pasteEmails').value;
+  if (!text.trim()) return;
+  const fd = new FormData();
+  fd.append('text', text);
+  fd.append('mode', 'paste');
+  const data = await fetch(`${API}/api/parse-recipients`, {method:'POST', body: fd}).then(r => r.json());
+  recipients = data.recipients;
+  renderRecipients(data.total, data.dupes);
+  toast(`${data.total} recipients parsed`, 'ok');
+}
+
+async function parseSingle() {
+  const email = document.getElementById('singleEmail').value.trim();
+  if (!email) return;
+  const fd = new FormData();
+  fd.append('email', email);
+  fd.append('mode', 'single');
+  const data = await fetch(`${API}/api/parse-recipients`, {method:'POST', body: fd}).then(r => r.json());
+  recipients = [...recipients, ...data.recipients];
+  const deduped = dedupeLocal(recipients);
+  recipients = deduped;
+  renderRecipients(recipients.length, 0);
+  document.getElementById('singleEmail').value = '';
+  toast(`Added ${email}`, 'ok');
+}
+
+function dedupeLocal(recs) {
+  const seen = new Set();
+  return recs.filter(r => {
+    const k = r.Email.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+}
+
+function renderRecipients(total, dupes) {
+  document.getElementById('recipientPreview').style.display = 'block';
+  document.getElementById('recipientCount').textContent = `${total} recipient${total!==1?'s':''} loaded${dupes?' · '+dupes+' duplicate(s) removed':''}`;
+  const tbody = document.getElementById('recipientBody');
+  tbody.innerHTML = recipients.slice(0, 50).map((r, i) =>
+    `<tr><td>${i+1}</td><td>${r.FirstName||''}</td><td>${r.LastName||''}</td><td>${r.Email}</td></tr>`
+  ).join('') + (total > 50 ? `<tr><td colspan="4" style="color:var(--muted);text-align:center;">... and ${total-50} more</td></tr>` : '');
+  updateRecipientBadge();
+  document.getElementById('dStatRecipients').textContent = total;
+}
+
+function clearRecipients() {
+  recipients = [];
+  document.getElementById('recipientPreview').style.display = 'none';
+  updateRecipientBadge();
+}
+
+function updateRecipientBadge() {
+  const badge = document.getElementById('recipientBadge');
+  if (recipients.length > 0) { badge.style.display = 'inline'; badge.textContent = recipients.length; }
+  else badge.style.display = 'none';
+}
+
+async function showSendPreview() {
+  if (!currentSettings.subject) { toast('Load a profile first', 'err'); return; }
+  if (recipients.length === 0) { toast('Load recipients first', 'err'); return; }
+  const body = currentSettings.body || currentSettings.body_text || DEFAULT_TEMPLATE;
+  const res = await fetch(`${API}/api/preview`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({body, subject: currentSettings.subject, recipient: recipients[0]})
+  }).then(r => r.json());
+  document.getElementById('sendPrevTo').textContent = `${recipients[0].FirstName} <${recipients[0].Email}>`;
+  document.getElementById('sendPrevSubj').textContent = res.subject;
+  const fmt = currentSettings.email_format;
+  document.getElementById('sendPrevBody').innerHTML = fmt === 'html' ? res.rendered : `<pre style="font-family:monospace;font-size:13px;white-space:pre-wrap;">${res.rendered}</pre>`;
+  document.getElementById('previewEmailCard').style.display = 'block';
+}
+
+function togglePreviewCard() {
+  document.getElementById('previewEmailCard').style.display = 'none';
+}
+
+async function startCampaign() {
+  if (!currentSettings.host) { toast('Load a profile first', 'err'); return; }
+  if (recipients.length === 0) { toast('Add recipients first', 'err'); return; }
+
+  let user = currentSettings.username;
+  let pass = currentSettings.password;
+  if (!user || !pass) {
+    user = prompt('SMTP username:') || '';
+    pass = prompt('SMTP password/API key:') || '';
+  }
+
+  const payload = {...currentSettings, recipients, username: user, password: pass, profile_name: currentSettings._profileName || ''};
+  document.getElementById('campaignMonitor').style.display = 'block';
+  document.getElementById('sendBtn').disabled = true;
+  document.getElementById('logBox').innerHTML = '';
+  document.getElementById('liveSent').textContent = '0';
+  document.getElementById('liveFailed').textContent = '0';
+  document.getElementById('liveTotal').textContent = recipients.length;
+  document.getElementById('livePct').textContent = '0%';
+  document.getElementById('progressBar').style.width = '0%';
+  document.getElementById('statusDot').classList.add('active');
+  document.getElementById('statusText').textContent = 'Sending...';
+
+  const res = await fetch(`${API}/api/campaign/start`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) { toast('Failed to start', 'err'); return; }
+
+  pollTimer = setInterval(pollStatus, 1000);
+}
+
+async function pollStatus() {
+  const s = await fetch(`${API}/api/campaign/status`).then(r => r.json());
+  document.getElementById('liveSent').textContent = s.sent;
+  document.getElementById('liveFailed').textContent = s.failed;
+  document.getElementById('liveTotal').textContent = s.total;
+  const pct = s.total > 0 ? Math.round((s.sent + s.failed) / s.total * 100) : 0;
+  document.getElementById('livePct').textContent = pct + '%';
+  document.getElementById('progressBar').style.width = pct + '%';
+
+  const box = document.getElementById('logBox');
+  const newLines = s.log.slice(lastLogLen);
+  newLines.forEach(l => {
+    const div = document.createElement('div');
+    div.className = `log-line ${l.type}`;
+    const now = new Date().toLocaleTimeString('en', {hour12:false});
+    div.innerHTML = `<span class="ts">${now}</span><span class="msg">${escHtml(l.msg)}</span>`;
+    box.appendChild(div);
+  });
+  lastLogLen = s.log.length;
+  if (box.children.length) box.scrollTop = box.scrollHeight;
+
+  if (s.done) {
+    clearInterval(pollTimer);
+    document.getElementById('sendBtn').disabled = false;
+    document.getElementById('statusDot').classList.remove('active');
+    document.getElementById('statusText').textContent = s.error ? 'Error' : 'Done';
+    document.getElementById('stopBtn').style.display = 'none';
+
+    // Show post-campaign actions
+    const actions = document.getElementById('postCampaignActions');
+    actions.style.display = 'flex';
+    if (s.failed > 0) {
+      document.getElementById('retryBtn').style.display = 'inline-flex';
+      // Extract failed emails from log
+      failedRecipients = (s.log || [])
+        .filter(l => l.type === 'fail')
+        .map(l => {
+          const m = l.msg.match(/<([^>]+)>/);
+          return m ? {Email: m[1], FirstName: '', LastName: ''} : null;
+        }).filter(Boolean);
+    }
+    await refreshProfiles();
+    toast(s.error ? `Error: ${s.error}` : `Done — ${s.sent} sent, ${s.failed} failed`, s.error ? 'err' : 'ok');
+  }
+}
+
+async function stopCampaign() {
+  await fetch(`${API}/api/campaign/stop`, {method:'POST'});
+  clearInterval(pollTimer);
+  document.getElementById('statusDot').classList.remove('active');
+  document.getElementById('statusText').textContent = 'Stopped';
+  document.getElementById('sendBtn').disabled = false;
+}
+
+async function retryFailed() {
+  if (!failedRecipients.length) { toast('No failed recipients to retry', 'info'); return; }
+  recipients = failedRecipients;
+  failedRecipients = [];
+  renderRecipients(recipients.length, 0);
+  document.getElementById('retryBtn').style.display = 'none';
+  toast(`Retrying ${recipients.length} failed recipient(s)`, 'info');
+  await startCampaign();
+}
+
+function newCampaignSameSettings() {
+  clearRecipients();
+  document.getElementById('campaignMonitor').style.display = 'none';
+  document.getElementById('postCampaignActions').style.display = 'none';
+  document.getElementById('stopBtn').style.display = 'inline-flex';
+  lastLogLen = 0;
+  toast('Ready for a new send — add recipients', 'info');
+}
+
+async function saveDefaultCreds() {
+  const u = document.getElementById('dcUser').value.trim();
+  const p = document.getElementById('dcPass').value;
+  if (!u) { toast('Enter a username', 'err'); return; }
+  await fetch(`${API}/api/default-credentials`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({username: u, password: p})
+  });
+  toast('Default credentials saved', 'ok');
+}
+
+function viewProfileModal(name) {
+  fetch(`${API}/api/profiles`).then(r => r.json()).then(data => {
+    const s = data.profiles[name];
+    if (!s) return;
+    document.getElementById('modalTitle').textContent = name;
+    const fmt = s.email_format === 'plain' ? 'Plain text' : 'HTML';
+    const rows = [
+      ['Provider', s.provider_name || '—'],
+      ['Host', `${s.host || ''}:${s.port || ''} [${s.security || ''}]`],
+      ['Username', s.username || '(not saved)'],
+      ['Sender Name', s.sender_name || '—'],
+      ['Sender Email', s.sender_email || '—'],
+      ['Subject', s.subject || '—'],
+      ['Format', fmt],
+      ['Delay', (s.delay || '1') + 's'],
+    ];
+    document.getElementById('modalBody').innerHTML = rows.map(([k,v]) =>
+      `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">
+        <span style="color:var(--muted);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">${k}</span>
+        <span style="font-family:var(--mono);font-size:12px;color:var(--text);text-align:right;max-width:280px;word-break:break-all;">${escHtml(String(v))}</span>
+      </div>`
+    ).join('');
+    document.getElementById('modalUseBtn').onclick = () => { closeModal(); loadProfileForSend(name); };
+    document.getElementById('modalEditBtn').onclick = () => { closeModal(); editProfile(name); };
+    document.getElementById('profileModal').style.display = 'flex';
+  });
+}
+
+function closeModal() {
+  document.getElementById('profileModal').style.display = 'none';
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+const DEFAULT_TEMPLATE = '<p>Hi {{.FirstName}},</p><p>This email is for {{.Email}}.</p>';
+
+function toast(msg, type='ok') {
+  document.querySelectorAll('.toast').forEach(t => t.remove());
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+init();
+</script>
+</body>
+</html>
