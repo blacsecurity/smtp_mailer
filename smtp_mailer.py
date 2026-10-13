@@ -1,4 +1,6 @@
-import json, os, csv, io, re, threading, time, random, smtplib, ssl, logging, html as html_lib
+import json, os, csv, io, re, threading, time, random, smtplib, ssl, socket, logging, html as html_lib
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from email import encoders
 from email.mime.base import MIMEBase
@@ -37,7 +39,37 @@ PROVIDERS = [
     ("Custom SMTP",         None,                                 None, None,    None),
 ]
 
-campaign_state = {"running": False, "log": [], "sent": 0, "failed": 0, "total": 0, "done": False, "error": None, "failed_list": []}
+MAX_WORKERS = 32
+LOG_MAXLEN = 1000
+FAILED_MAXLEN = 5000
+RESULTS_DIR = "results"
+
+_state_lock = threading.Lock()
+_campaign_counter = {"n": 0}
+campaign_state = {
+    "id": 0, "running": False, "done": False, "error": None, "stopped": False,
+    "sent": 0, "failed": 0, "skipped": 0, "total": 0,
+    "started_at": None, "finished_at": None,
+    "log": deque(maxlen=LOG_MAXLEN),
+    "seq": 0,
+    "failed_list": deque(maxlen=FAILED_MAXLEN),
+    "results_file": None,
+}
+
+class FatalAuth(Exception):
+    """Raised when SMTP authentication fails and the campaign must abort."""
+
+def _log(kind, msg):
+    with _state_lock:
+        campaign_state["seq"] += 1
+        campaign_state["log"].append({
+            "seq": campaign_state["seq"], "type": kind, "msg": msg,
+            "t": datetime.now().strftime("%H:%M:%S"),
+        })
+
+def _bump(field, n=1):
+    with _state_lock:
+        campaign_state[field] += n
 
 def load_config():
     if os.path.isfile(CONFIG_FILE):
@@ -110,7 +142,11 @@ def html_to_text(value):
 def text_to_html(value):
     return "<p>" + html_lib.escape(value).replace("\n\n", "</p><p>").replace("\n", "<br>") + "</p>"
 
-def build_message(sender_name, sender_email, recipient, subject, body, subtype, attachment_path=None):
+def clean_header(value):
+    """Strip CR/LF so user input cannot inject extra headers."""
+    return re.sub(r"[\r\n]+", " ", str(value or "")).strip()
+
+def build_message(sender_name, sender_email, recipient, subject, body, subtype, attachment_path=None, unsubscribe_url=None):
     domain = sender_email.split("@")[-1] if "@" in sender_email else None
     if attachment_path:
         msg = MIMEMultipart("mixed")
@@ -119,7 +155,9 @@ def build_message(sender_name, sender_email, recipient, subject, body, subtype, 
         msg = MIMEMultipart("alternative")
         container = msg
 
-    to_name = f"{recipient.get('FirstName','')} {recipient.get('LastName','')}".strip()
+    sender_name = clean_header(sender_name)
+    subject = clean_header(subject)
+    to_name = clean_header(f"{recipient.get('FirstName','')} {recipient.get('LastName','')}".strip())
     msg["From"] = formataddr((sender_name, sender_email))
     msg["To"] = formataddr((to_name, recipient["Email"]))
     msg["Subject"] = subject
@@ -128,6 +166,10 @@ def build_message(sender_name, sender_email, recipient, subject, body, subtype, 
     if sender_email:
         msg["Reply-To"] = formataddr((sender_name, sender_email))
         msg["Sender"] = formataddr((sender_name, sender_email))
+    if unsubscribe_url:
+        # Gmail/Outlook give inbox placement credit to one-click unsubscribe.
+        msg["List-Unsubscribe"] = f"<{clean_header(unsubscribe_url)}>"
+        msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
     if subtype == "plain":
         text_body = body
@@ -258,137 +300,373 @@ def preview_email():
     subject_rendered = render(data.get("subject", ""), recipient)
     return jsonify({"rendered": rendered, "subject": subject_rendered, "to": recipient})
 
+class _Claim:
+    """Thread-safe work counter shared by all send workers."""
+    def __init__(self, total):
+        self.total = total
+        self.next_i = 0
+        self.lock = threading.Lock()
+
+    def take(self):
+        with self.lock:
+            if self.next_i >= self.total:
+                return None
+            i = self.next_i
+            self.next_i += 1
+            return i
+
+
+class SMTPWorker:
+    """One SMTP connection that reconnects transparently if it drops."""
+    def __init__(self, host, port, security, username, password):
+        self.host, self.port, self.security = host, port, security
+        self.username, self.password = username, password
+        self.server = None
+
+    def connect(self):
+        server = connect(self.host, self.port, self.security)
+        try:
+            server.login(self.username, self.password)
+        except Exception:
+            try:
+                server.close()
+            except Exception:
+                pass
+            raise
+        self.server = server
+
+    def send(self, sender, recipient, raw):
+        if self.server is None:
+            self.connect()
+        self.server.sendmail(sender, recipient, raw)
+
+    def reset(self):
+        try:
+            if self.server:
+                self.server.close()
+        except Exception:
+            pass
+        self.server = None
+
+    def close(self):
+        try:
+            if self.server:
+                self.server.quit()
+        except Exception:
+            self.reset()
+        self.server = None
+
+
+def _is_transient(exc):
+    """True for connection-level errors and 4xx SMTP replies worth retrying."""
+    if isinstance(exc, (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError,
+                        smtplib.SMTPHeloError, ssl.SSLError, ConnectionError, socket.timeout)):
+        return True
+    if isinstance(exc, smtplib.SMTPResponseException):
+        code = getattr(exc, "smtp_code", 0) or 0
+        return 400 <= code < 500
+    return isinstance(exc, OSError) and not isinstance(exc, smtplib.SMTPException)
+
+
+def deliver(worker, sender_email, recipient_email, raw, retries):
+    """Send one message, reconnecting and retrying transient failures."""
+    attempt = 0
+    while True:
+        try:
+            worker.send(sender_email, recipient_email, raw)
+            return True, ""
+        except smtplib.SMTPAuthenticationError as e:
+            raise FatalAuth(str(e))
+        except Exception as e:
+            if not _is_transient(e) or attempt >= retries:
+                return False, str(e)
+            attempt += 1
+            time.sleep(min(2 ** attempt, 15))
+            worker.reset()
+
+
+def _open_results():
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(RESULTS_DIR, f"results_{stamp}.csv")
+    fh = open(path, "w", newline="", encoding="utf-8")
+    writer = csv.DictWriter(fh, fieldnames=["Email", "FirstName", "LastName", "Status", "Error", "Timestamp"])
+    writer.writeheader()
+    fh.flush()
+    return path, fh, writer
+
+
+def run_campaign(s):
+    try:
+        host = s["host"]
+        port = int(s["port"])
+        security = s.get("security", "STARTTLS")
+        username = s.get("username", "")
+        password = s.get("password", "")
+        sender_name = (s.get("sender_name") or "").strip()
+        sender_email = (s.get("sender_email") or "").strip()
+        subject = s.get("subject", "")
+        recipients = s.get("recipients", [])
+        template = s.get("body", DEFAULT_TEMPLATE)
+        subtype = s.get("email_format", "html")
+        delay_range = parse_delay(s.get("delay", "1"))
+        unsubscribe_url = (s.get("unsubscribe_url") or "").strip() or None
+
+        try:
+            workers = int(s.get("workers", 1) or 1)
+        except (TypeError, ValueError):
+            workers = 1
+        workers = max(1, min(MAX_WORKERS, workers))
+
+        try:
+            retries = int(s.get("retries", 1) or 0)
+        except (TypeError, ValueError):
+            retries = 1
+        retries = max(0, min(5, retries))
+
+        if not sender_email or "@" not in sender_email or "." not in sender_email.split("@")[-1]:
+            campaign_state["error"] = "A valid Sender Email is required — recipients must see the sender identity."
+            _log("error", campaign_state["error"])
+            return
+
+        total = len(recipients)
+        with _state_lock:
+            campaign_state["total"] = total
+            campaign_state["started_at"] = time.time()
+
+        _log("info", f"Connecting to {host}:{port} [{security}] · {workers} worker(s) · {retries} retr{'y' if retries == 1 else 'ies'}")
+
+        # Fail fast on connection/authentication problems before spawning workers.
+        try:
+            probe = connect(host, port, security)
+        except Exception as e:
+            campaign_state["error"] = f"Connection error: {e}"
+            _log("error", campaign_state["error"])
+            return
+        try:
+            probe.login(username, password)
+        except smtplib.SMTPAuthenticationError:
+            campaign_state["error"] = "Authentication failed. Check your username and password/API key."
+            _log("error", campaign_state["error"])
+            try:
+                probe.close()
+            except Exception:
+                pass
+            return
+        finally:
+            try:
+                probe.quit()
+            except Exception:
+                try:
+                    probe.close()
+                except Exception:
+                    pass
+
+        _log("success", f"Authenticated — sending as {sender_email}")
+
+        results_file, fh, writer = _open_results()
+        with _state_lock:
+            campaign_state["results_file"] = results_file
+
+        processed = bytearray(total)
+        claim = _Claim(total)
+        rlock = threading.Lock()
+        write_count = [0]
+
+        def record(row):
+            with rlock:
+                writer.writerow(row)
+                write_count[0] += 1
+                if write_count[0] % 200 == 0:
+                    fh.flush()
+
+        def worker(wid):
+            w = SMTPWorker(host, port, security, username, password)
+            try:
+                w.connect()
+            except smtplib.SMTPAuthenticationError:
+                campaign_state["error"] = "Authentication failed. Check your username and password/API key."
+                with _state_lock:
+                    campaign_state["running"] = False
+                _log("error", campaign_state["error"])
+                return
+            except Exception as e:
+                _log("warn", f"[w{wid}] connection failed — {e}")
+                return
+            try:
+                while campaign_state["running"]:
+                    i = claim.take()
+                    if i is None:
+                        break
+                    recipient = recipients[i]
+                    email = (recipient.get("Email") or "").strip()
+                    first = recipient.get("FirstName", "")
+                    last = recipient.get("LastName", "")
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    if not email:
+                        processed[i] = 1
+                        _bump("skipped")
+                        record({"Email": "", "FirstName": first, "LastName": last, "Status": "skipped", "Error": "missing email", "Timestamp": ts})
+                        continue
+                    rname = f"{first} {last}".strip() or email
+                    try:
+                        body = render(template, recipient)
+                        msg = build_message(sender_name, sender_email, recipient, subject, body, subtype, unsubscribe_url=unsubscribe_url)
+                        ok, err = deliver(w, sender_email, email, msg.as_string(), retries)
+                    except FatalAuth:
+                        campaign_state["error"] = "Authentication failed. Check your username and password/API key."
+                        with _state_lock:
+                            campaign_state["running"] = False
+                        _log("error", campaign_state["error"])
+                        return
+                    except Exception as e:
+                        ok, err = False, str(e)
+                    processed[i] = 1
+                    if ok:
+                        _bump("sent")
+                        _log("sent", f"[{i + 1}/{total}] {rname} <{email}>")
+                        record({"Email": email, "FirstName": first, "LastName": last, "Status": "sent", "Error": "", "Timestamp": ts})
+                    else:
+                        _bump("failed")
+                        _log("fail", f"[{i + 1}/{total}] {rname} <{email}> — {err}")
+                        with _state_lock:
+                            campaign_state["failed_list"].append(recipient)
+                        record({"Email": email, "FirstName": first, "LastName": last, "Status": "failed", "Error": str(err), "Timestamp": ts})
+                    lo, hi = delay_range
+                    wait = random.uniform(lo, hi) if lo != hi else lo
+                    while wait > 0 and campaign_state["running"]:
+                        step = min(0.2, wait)
+                        time.sleep(step)
+                        wait -= step
+            finally:
+                w.close()
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(worker, wid) for wid in range(1, workers + 1)]
+            for f in futures:
+                try:
+                    f.result()
+                except Exception:
+                    pass
+
+        unprocessed = [i for i in range(total) if not processed[i]]
+        stopped = campaign_state["error"] is None and len(unprocessed) > 0
+        with _state_lock:
+            campaign_state["stopped"] = stopped
+        for i in unprocessed:
+            recipient = recipients[i]
+            processed[i] = 1
+            _bump("skipped")
+            record({"Email": recipient.get("Email", ""), "FirstName": recipient.get("FirstName", ""), "LastName": recipient.get("LastName", ""), "Status": "skipped", "Error": "not sent", "Timestamp": datetime.now().strftime("%H:%M:%S")})
+        fh.flush()
+        fh.close()
+
+        cfg = load_config()
+        cfg["last_campaign"] = {
+            "profile": s.get("profile_name", ""), "subject": subject, "csv_path": results_file,
+            "sent": campaign_state["sent"], "failed": campaign_state["failed"],
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        save_config(cfg)
+
+        if campaign_state["error"]:
+            pass
+        elif stopped:
+            _log("warn", f"Campaign stopped — {campaign_state['sent']} sent, {campaign_state['failed']} failed, {campaign_state['skipped']} skipped. Results saved to {results_file}")
+        else:
+            _log("done", f"Campaign complete — {campaign_state['sent']} sent, {campaign_state['failed']} failed, {campaign_state['skipped']} skipped. Results saved to {results_file}")
+
+    except smtplib.SMTPAuthenticationError:
+        campaign_state["error"] = "Authentication failed. Check your username and password/API key."
+        _log("error", campaign_state["error"])
+    except Exception as e:
+        campaign_state["error"] = str(e)
+        _log("error", f"Campaign error: {e}")
+    finally:
+        with _state_lock:
+            campaign_state["finished_at"] = time.time()
+            campaign_state["done"] = True
+            campaign_state["running"] = False
+
+
 @app.route("/api/campaign/start", methods=["POST"])
 def start_campaign():
     global campaign_state
     if campaign_state["running"]:
         return jsonify({"error": "Campaign already running"}), 400
 
-    data = request.json
-    campaign_state = {"running": True, "log": [], "sent": 0, "failed": 0, "total": 0, "done": False, "error": None, "failed_list": []}
+    data = request.json or {}
+    with _state_lock:
+        _campaign_counter["n"] += 1
+        campaign_state = {
+            "id": _campaign_counter["n"],
+            "running": True, "done": False, "error": None, "stopped": False,
+            "sent": 0, "failed": 0, "skipped": 0, "total": 0,
+            "started_at": None, "finished_at": None,
+            "log": deque(maxlen=LOG_MAXLEN),
+            "seq": 0, "failed_list": deque(maxlen=FAILED_MAXLEN),
+            "results_file": None,
+        }
 
-    def run():
-        global campaign_state
-        try:
-            s = data
-            host = s["host"]
-            port = int(s["port"])
-            security = s["security"]
-            username = s["username"]
-            password = s["password"]
-            sender_name = (s.get("sender_name") or "").strip()
-            sender_email = (s.get("sender_email") or "").strip()
-            subject = s["subject"]
-            recipients = s["recipients"]
-            template = s.get("body", DEFAULT_TEMPLATE)
-            subtype = s.get("email_format", "html")
-            delay_range = parse_delay(s.get("delay", "1"))
-
-            if not sender_email or "@" not in sender_email or "." not in sender_email.split("@")[-1]:
-                campaign_state["error"] = "A valid Sender Email is required — recipients must see the sender identity."
-                campaign_state["log"].append({"type": "error", "msg": campaign_state["error"]})
-                return
-
-            campaign_state["total"] = len(recipients)
-            campaign_state["log"].append({"type": "info", "msg": f"Connecting to {host}:{port} [{security}]..."})
-
-            server = connect(host, port, security)
-            server.login(username, password)
-            campaign_state["log"].append({"type": "success", "msg": f"Authenticated as {username} — sending as {sender_email}"})
-
-            all_results = []
-            stopped = False
-            last_index = 0
-
-            with server:
-                for i, recipient in enumerate(recipients, 1):
-                    last_index = i
-                    if not campaign_state["running"]:
-                        stopped = True
-                        break
-                    email = recipient.get("Email", "")
-                    first = recipient.get("FirstName", "")
-                    last = recipient.get("LastName", "")
-                    rname = f"{first} {last}".strip() or email
-                    ts = datetime.now().strftime("%H:%M:%S")
-                    if not email:
-                        campaign_state["log"].append({"type": "warn", "msg": f"[{i}/{len(recipients)}] Skipped — missing email"})
-                        all_results.append({"Email": "", "FirstName": first, "LastName": last, "Status": "skipped", "Error": "missing email", "Timestamp": ts})
-                        continue
-                    try:
-                        body = render(template, recipient)
-                        msg = build_message(sender_name, sender_email, recipient, subject, body, subtype)
-                        server.sendmail(sender_email, email, msg.as_string())
-                        campaign_state["sent"] += 1
-                        campaign_state["log"].append({"type": "sent", "msg": f"[{i}/{len(recipients)}] ✓ {rname} <{email}>"})
-                        all_results.append({"Email": email, "FirstName": first, "LastName": last, "Status": "sent", "Error": "", "Timestamp": ts})
-                    except Exception as e:
-                        campaign_state["failed"] += 1
-                        campaign_state["log"].append({"type": "fail", "msg": f"[{i}/{len(recipients)}] ✗ {rname} <{email}> — {e}"})
-                        all_results.append({"Email": email, "FirstName": first, "LastName": last, "Status": "failed", "Error": str(e), "Timestamp": ts})
-                        campaign_state["failed_list"].append(recipient)
-
-                    if i < len(recipients) and campaign_state["running"]:
-                        lo, hi = delay_range
-                        wait = random.uniform(lo, hi) if lo != hi else lo
-                        while wait > 0 and campaign_state["running"]:
-                            step = min(0.2, wait)
-                            time.sleep(step)
-                            wait -= step
-
-            if stopped:
-                ts = datetime.now().strftime("%H:%M:%S")
-                for recipient in recipients[last_index - 1:]:
-                    email = recipient.get("Email", "")
-                    campaign_state["log"].append({"type": "warn", "msg": f"[skipped] {email} — campaign stopped"})
-                    all_results.append({"Email": email, "FirstName": recipient.get("FirstName", ""), "LastName": recipient.get("LastName", ""), "Status": "skipped", "Error": "campaign stopped", "Timestamp": ts})
-
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            results_filename = f"results_{stamp}.csv"
-            with open(results_filename, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=["Email", "FirstName", "LastName", "Status", "Error", "Timestamp"])
-                writer.writeheader()
-                writer.writerows(all_results)
-
-            cfg = load_config()
-            cfg["last_campaign"] = {"profile": s.get("profile_name", ""), "subject": subject, "csv_path": "", "sent": campaign_state["sent"], "failed": campaign_state["failed"], "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-            save_config(cfg)
-
-            if stopped:
-                campaign_state["log"].append({"type": "warn", "msg": f"Campaign stopped — {campaign_state['sent']} sent, {campaign_state['failed']} failed. Results saved to {results_filename}"})
-            else:
-                campaign_state["log"].append({"type": "done", "msg": f"Campaign complete — {campaign_state['sent']} sent, {campaign_state['failed']} failed. Results saved to {results_filename}"})
-
-        except smtplib.SMTPAuthenticationError:
-            campaign_state["error"] = "Authentication failed. Check your username and password/API key."
-            campaign_state["log"].append({"type": "error", "msg": campaign_state["error"]})
-        except Exception as e:
-            campaign_state["error"] = str(e)
-            campaign_state["log"].append({"type": "error", "msg": f"Connection error: {e}"})
-        finally:
-            campaign_state["done"] = True
-            campaign_state["running"] = False
-
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
+    threading.Thread(target=run_campaign, args=(data,), daemon=True).start()
     return jsonify({"ok": True})
+
 
 @app.route("/api/campaign/status")
 def campaign_status():
-    return jsonify(campaign_state)
+    try:
+        since = int(request.args.get("since", 0) or 0)
+    except (TypeError, ValueError):
+        since = 0
+    with _state_lock:
+        new_log = [e for e in campaign_state["log"] if e["seq"] > since]
+        processed = campaign_state["sent"] + campaign_state["failed"] + campaign_state["skipped"]
+        started = campaign_state["started_at"]
+        finished = campaign_state["finished_at"]
+        elapsed = ((finished or time.time()) - started) if started else 0
+        rate = (processed / elapsed) if elapsed > 0 else 0
+        remaining = max(0, campaign_state["total"] - processed)
+        eta = (remaining / rate) if rate > 0 else None
+        failed_list = list(campaign_state["failed_list"])
+        return jsonify({
+            "id": campaign_state["id"],
+            "running": campaign_state["running"],
+            "done": campaign_state["done"],
+            "error": campaign_state["error"],
+            "stopped": campaign_state["stopped"],
+            "sent": campaign_state["sent"],
+            "failed": campaign_state["failed"],
+            "skipped": campaign_state["skipped"],
+            "total": campaign_state["total"],
+            "seq": campaign_state["seq"],
+            "log": new_log,
+            "failed_list": failed_list,
+            "failed_truncated": campaign_state["failed"] > len(failed_list),
+            "processed": processed,
+            "rate": round(rate, 2),
+            "elapsed": round(elapsed, 1),
+            "eta": (round(eta) if eta is not None else None),
+            "results_file": campaign_state["results_file"],
+        })
+
 
 @app.route("/api/campaign/stop", methods=["POST"])
 def stop_campaign():
-    global campaign_state
     if campaign_state.get("running"):
-        campaign_state["running"] = False
-        campaign_state["log"].append({"type": "warn", "msg": "Stop requested — finishing current send..."})
+        with _state_lock:
+            campaign_state["running"] = False
+        _log("warn", "Stop requested — workers finishing current sends...")
     return jsonify({"ok": True})
 
 @app.route("/")
 def index():
     return send_from_directory("static", "index.html")
 
+@app.route("/sw.js")
+def service_worker():
+    return send_from_directory("static", "sw.js", mimetype="application/javascript")
+
 if __name__ == "__main__":
     os.makedirs("static", exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
     app.run(debug=False, port=2000)

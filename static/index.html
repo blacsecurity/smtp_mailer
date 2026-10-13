@@ -75,6 +75,34 @@ body::before {
 .topbar-status { font-size: 11px; font-family: var(--mono); color: var(--muted); display: flex; align-items: center; gap: 8px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted2); transition: background 0.3s, box-shadow 0.3s; }
 .status-dot.active { background: var(--green); box-shadow: 0 0 10px var(--green); animation: pulse 2s infinite; }
+.icon-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; flex-shrink: 0; border-radius: 10px; border: 1px solid var(--border2); background: var(--surface); color: var(--muted); cursor: pointer; transition: color 0.15s, background 0.15s, border-color 0.15s; }
+.icon-btn:hover { color: var(--text); background: var(--surface2); }
+.icon-btn svg { width: 17px; height: 17px; }
+.icon-btn.on { color: var(--accent2); border-color: rgba(108,99,255,0.45); background: var(--accent-soft); }
+.notif-wrap { position: relative; display: inline-flex; }
+.notif-count {
+  position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: 9px; background: var(--accent); color: #fff; font-family: var(--mono);
+  font-size: 9px; font-weight: 500; line-height: 13px; text-align: center;
+  border: 2px solid var(--bg); box-shadow: 0 0 10px rgba(108,99,255,0.65);
+}
+.notif-menu {
+  position: absolute; top: calc(100% + 10px); right: 0; width: min(340px, calc(100vw - 32px));
+  background: var(--bg2); border: 1px solid var(--border2); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); z-index: 60; overflow: hidden; display: none;
+  animation: fadeIn 0.18s var(--ease);
+}
+.notif-menu.open { display: block; }
+.notif-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+.notif-head h4 { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; font-family: var(--mono); color: var(--muted); margin: 0; }
+.notif-actions { display: flex; align-items: center; gap: 6px; }
+.notif-list { max-height: 320px; overflow-y: auto; }
+.notif-item { padding: 11px 14px; border-bottom: 1px solid var(--border); }
+.notif-item:last-child { border-bottom: none; }
+.notif-item .nt { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 3px; }
+.notif-item .nb { font-size: 11px; color: var(--muted); line-height: 1.5; word-break: break-word; }
+.notif-item .nm { font-size: 9px; color: var(--muted2); font-family: var(--mono); margin-top: 5px; }
+.notif-empty { padding: 28px 14px; text-align: center; color: var(--muted2); font-family: var(--mono); font-size: 12px; }
 
 /* Sidebar */
 .sidebar {
@@ -162,6 +190,7 @@ h3 { font-size: 12px; font-weight: 700; letter-spacing: 1.2px; color: var(--mute
 /* Form elements */
 .form-group { margin-bottom: 18px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.form-row-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 label { display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: var(--muted); text-transform: uppercase; font-family: var(--mono); margin-bottom: 6px; }
 .label-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .label-row label { margin-bottom: 0; }
@@ -177,6 +206,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 select option { background: var(--bg2); }
 textarea { resize: vertical; min-height: 160px; line-height: 1.65; }
 .field-hint { font-size: 11px; color: var(--muted2); font-family: var(--mono); margin-top: 8px; }
+.note { font-size: 12px; color: var(--muted); line-height: 1.75; }
+.note code { font-family: var(--mono); color: var(--accent2); background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
 .check-row { display: flex; gap: 9px; align-items: center; font-size: 12px; color: var(--muted); }
 .check-row input { width: auto; accent-color: var(--accent); cursor: pointer; }
 .check-row label { text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--muted); cursor: pointer; margin: 0; font-family: var(--sans); }
@@ -404,6 +435,22 @@ textarea { resize: vertical; min-height: 160px; line-height: 1.65; }
       <div class="topbar-tagline">SMTP Campaign Engine</div>
     </div>
     <div class="topbar-spacer"></div>
+    <div class="notif-wrap" id="notifWrap">
+      <button type="button" class="icon-btn" id="notifyBtn" onclick="toggleNotifMenu()" title="Notifications" aria-label="Notifications" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+        <span class="notif-count" id="notifCount" style="display:none">0</span>
+      </button>
+      <div class="notif-menu" id="notifMenu" role="menu" aria-label="Notifications">
+        <div class="notif-head">
+          <h4>Notifications</h4>
+          <div class="notif-actions">
+            <button type="button" class="btn-micro" id="notifClearBtn" onclick="clearNotifications()">Clear</button>
+            <button type="button" class="btn-micro" id="notifEnableBtn" onclick="toggleNotifyEnabled()">Enable</button>
+          </div>
+        </div>
+        <div class="notif-list" id="notifList"></div>
+      </div>
+    </div>
     <div class="topbar-status">
       <div class="status-dot" id="statusDot"></div>
       <span id="statusText">Ready</span>
@@ -592,16 +639,42 @@ textarea { resize: vertical; min-height: 160px; line-height: 1.65; }
 
       <div class="card">
         <h3>Sending Options</h3>
+        <div class="form-row-3">
+          <div class="form-group">
+            <label for="sendWorkers">Workers (Parallel Connections)</label>
+            <input type="number" id="sendWorkers" value="4" min="1" max="32" step="1">
+          </div>
+          <div class="form-group">
+            <label for="sendRetries">Retries Per Email</label>
+            <input type="number" id="sendRetries" value="2" min="0" max="5" step="1">
+          </div>
+          <div class="form-group">
+            <label for="sendDelay">Delay Between Emails (s)</label>
+            <input type="text" id="sendDelay" value="1" placeholder="1  or  2-5 (range)">
+          </div>
+        </div>
         <div class="form-row">
           <div class="form-group">
-            <label for="sendDelay">Delay Between Emails</label>
-            <input type="text" id="sendDelay" value="1" placeholder="1  or  2-5 (range in seconds)">
+            <label for="unsubscribeUrl">Unsubscribe URL (optional)</label>
+            <input type="text" id="unsubscribeUrl" placeholder="https://example.com/unsubscribe">
           </div>
           <div class="form-group">
             <label for="profileName">Profile Name</label>
             <input type="text" id="profileName" placeholder="Auto-generated if blank">
           </div>
         </div>
+        <p class="field-hint" style="margin-top:0;">Workers multiply throughput for bulk providers. Keep it low for Gmail/Outlook to avoid rate limits. Retries only apply to transient (connection / 4xx) failures.</p>
+      </div>
+
+      <div class="card">
+        <h3>Deliverability</h3>
+        <p class="note">
+          Inbox placement is decided by the receiving provider and your domain's reputation. To land in the inbox your sending domain must publish
+          <code>SPF</code>, <code>DKIM</code> and <code>DMARC</code> DNS records that align with the <strong>Sender Email</strong> you enter here.
+          Transmit already adds <code>Date</code>, <code>Message-ID</code>, <code>Reply-To</code>, a <code>List-Unsubscribe</code> header and a plain-text
+          alternative, and it sends the envelope sender as your From address. Use a modest worker count, add a delay to respect provider limits, keep
+          bounces low and never send to purchased lists.
+        </p>
       </div>
 
       <div class="form-actions">
@@ -721,6 +794,14 @@ textarea { resize: vertical; min-height: 160px; line-height: 1.65; }
             <div class="stat-val accent" id="livePct">0%</div>
             <div class="stat-label">Progress</div>
           </div>
+          <div class="stat">
+            <div class="stat-val" id="liveRate">0/s</div>
+            <div class="stat-label">Rate</div>
+          </div>
+          <div class="stat">
+            <div class="stat-val" id="liveEta">—</div>
+            <div class="stat-label">ETA</div>
+          </div>
         </div>
         <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
         <div class="log-box" id="logBox"></div>
@@ -805,6 +886,15 @@ let editingProfile = null;
 let failedRecipients = [];
 let lastLogLen = 0;
 let activeProfileName = null;
+let lastSeq = 0;
+const NOTIFY_KEY = 'transmit.notify';
+const NOTIF_ASKED = 'transmit.notifyAsked';
+const NOTIF_HISTORY = 'transmit.notifications';
+const NOTIFIED_KEY = 'transmit.notified';
+let swReg = null;
+let notifyEnabled = false;
+let notifMenuOpen = false;
+let notifications = [];
 
 async function init() {
   try {
@@ -830,7 +920,12 @@ async function init() {
   });
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { closeModal(); closeNav(); }
+    if (e.key === 'Escape') { closeModal(); closeNav(); closeNotifMenu(); }
+  });
+
+  document.addEventListener('click', e => {
+    const wrap = document.getElementById('notifWrap');
+    if (notifMenuOpen && wrap && !wrap.contains(e.target)) closeNotifMenu();
   });
 
   restoreSidebarState();
@@ -840,6 +935,10 @@ async function init() {
   };
   if (mobileQuery.addEventListener) mobileQuery.addEventListener('change', onViewportChange);
   else if (mobileQuery.addListener) mobileQuery.addListener(onViewportChange);
+
+  await restoreNotifyState();
+  await autoRequestNotifications();
+  await resumeCampaign();
 }
 
 /* ---------- Navigation ---------- */
@@ -1171,6 +1270,9 @@ function gatherSettings() {
     email_format: emailFormat,
     body: document.getElementById('emailBody').value,
     delay: document.getElementById('sendDelay').value.trim() || '1',
+    workers: document.getElementById('sendWorkers').value.trim() || '1',
+    retries: document.getElementById('sendRetries').value.trim() || '0',
+    unsubscribe_url: document.getElementById('unsubscribeUrl').value.trim(),
   };
 }
 
@@ -1206,6 +1308,9 @@ async function editProfile(name) {
   document.getElementById('emailSubject').value = s.subject || '';
   document.getElementById('emailBody').value = s.body || s.body_text || '';
   document.getElementById('sendDelay').value = s.delay || '1';
+  document.getElementById('sendWorkers').value = s.workers || '4';
+  document.getElementById('sendRetries').value = s.retries || '2';
+  document.getElementById('unsubscribeUrl').value = s.unsubscribe_url || '';
   emailFormat = s.email_format || 'html';
   let idx = providers.findIndex(p => p.name === s.provider_name);
   if (idx < 0 && s.host) {
@@ -1276,8 +1381,10 @@ async function renameProfilePrompt(name) {
 function clearCompose() {
   editingProfile = null;
   document.getElementById('composeTitle').textContent = 'New Campaign';
-  ['smtpUser', 'smtpPass', 'senderName', 'senderEmail', 'emailSubject', 'emailBody', 'profileName'].forEach(id => document.getElementById(id).value = '');
+  ['smtpUser', 'smtpPass', 'senderName', 'senderEmail', 'emailSubject', 'emailBody', 'profileName', 'unsubscribeUrl'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('sendDelay').value = '1';
+  document.getElementById('sendWorkers').value = '4';
+  document.getElementById('sendRetries').value = '2';
   document.getElementById('customHost').value = '';
   document.getElementById('customPort').value = '587';
   document.getElementById('customSecurity').value = 'STARTTLS';
@@ -1446,9 +1553,12 @@ async function startCampaign() {
   document.getElementById('liveFailed').textContent = '0';
   document.getElementById('liveTotal').textContent = recipients.length;
   document.getElementById('livePct').textContent = '0%';
+  document.getElementById('liveRate').textContent = '0/s';
+  document.getElementById('liveEta').textContent = '—';
   document.getElementById('progressBar').style.width = '0%';
   document.getElementById('statusDot').classList.add('active');
   document.getElementById('statusText').textContent = 'Sending…';
+  lastSeq = 0;
   document.getElementById('campaignMonitor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
   let res;
@@ -1471,6 +1581,8 @@ async function startCampaign() {
   }
 
   pollTimer = setInterval(pollStatus, 1000);
+  pollStatus();
+  notify('Campaign started', `${recipients.length} recipient${recipients.length === 1 ? '' : 's'} queued`, 'transmit-start');
 }
 
 function resetMonitorUI() {
@@ -1483,32 +1595,36 @@ function resetMonitorUI() {
 async function pollStatus() {
   let s;
   try {
-    s = await fetch(`${API}/api/campaign/status`).then(r => r.json());
+    s = await fetch(`${API}/api/campaign/status?since=${lastSeq}`).then(r => r.json());
   } catch (_) { return; }
   document.getElementById('liveSent').textContent = s.sent;
-  document.getElementById('liveFailed').textContent = s.failed;
+  document.getElementById('liveFailed').textContent = s.skipped ? `${s.failed} · ${s.skipped} skipped` : s.failed;
   document.getElementById('liveTotal').textContent = s.total;
-  const pct = s.total > 0 ? Math.round((s.sent + s.failed) / s.total * 100) : 0;
+  const done = (s.processed != null ? s.processed : (s.sent + s.failed));
+  const pct = s.total > 0 ? Math.round(done / s.total * 100) : 0;
   document.getElementById('livePct').textContent = pct + '%';
   document.getElementById('progressBar').style.width = pct + '%';
+  document.getElementById('liveRate').textContent = `${(s.rate || 0).toFixed(1)}/s`;
+  document.getElementById('liveEta').textContent = formatEta(s.eta);
 
   const box = document.getElementById('logBox');
-  const newLines = s.log.slice(lastLogLen);
+  const newLines = s.log || [];
   newLines.forEach(l => {
     const div = document.createElement('div');
     div.className = `log-line ${l.type}`;
-    const now = new Date().toLocaleTimeString('en', { hour12: false });
+    const now = l.t || new Date().toLocaleTimeString('en', { hour12: false });
     div.innerHTML = `<span class="ts">${now}</span><span class="msg">${escHtml(l.msg)}</span>`;
     box.appendChild(div);
   });
-  lastLogLen = s.log.length;
+  lastLogLen = box.children.length;
+  lastSeq = s.seq != null ? s.seq : lastSeq;
   if (box.children.length) box.scrollTop = box.scrollHeight;
 
   if (s.done) {
     clearInterval(pollTimer);
     document.getElementById('sendBtn').disabled = false;
     document.getElementById('statusDot').classList.remove('active');
-    document.getElementById('statusText').textContent = s.error ? 'Error' : 'Done';
+    document.getElementById('statusText').textContent = s.error ? 'Error' : (s.stopped ? 'Stopped' : 'Done');
     document.getElementById('stopBtn').style.display = 'none';
 
     const actions = document.getElementById('postCampaignActions');
@@ -1525,8 +1641,24 @@ async function pollStatus() {
           }).filter(Boolean);
     }
     await refreshProfiles();
-    toast(s.error ? `Error: ${s.error}` : `Done — ${s.sent} sent, ${s.failed} failed`, s.error ? 'err' : 'ok');
+    const summary = s.error ? `Error: ${s.error}` : (s.stopped ? `Unfinished — ${s.sent} sent, ${s.failed} failed, ${s.skipped || 0} skipped` : `Done — ${s.sent} sent, ${s.failed} failed`);
+    toast(summary, s.error ? 'err' : (s.stopped ? 'info' : 'ok'));
+    if (!s.id || notifiedState().doneId !== s.id) {
+      notifyCampaignOutcome(s);
+      if (s.id) markNotified('doneId', s.id);
+    }
   }
+}
+
+function formatEta(seconds) {
+  if (seconds == null || !isFinite(seconds) || seconds <= 0) return '—';
+  const s = Math.round(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
 }
 
 async function stopCampaign() {
@@ -1601,6 +1733,9 @@ async function viewProfileModal(name) {
     ['Subject', s.subject || '—'],
     ['Format', fmt],
     ['Delay', (s.delay || '1') + 's'],
+    ['Workers', String(s.workers || '4')],
+    ['Retries', String(s.retries || '2')],
+    ['Unsubscribe', s.unsubscribe_url || '—'],
   ];
   document.getElementById('modalBody').innerHTML = rows.map(([k, v]) =>
     `<div class="modal-row">
@@ -1615,6 +1750,241 @@ async function viewProfileModal(name) {
 
 function closeModal() {
   document.getElementById('profileModal').style.display = 'none';
+}
+
+/* ---------- Notifications ---------- */
+function notifySupported() {
+  return typeof window !== 'undefined' && 'Notification' in window;
+}
+
+async function registerServiceWorker() {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return null;
+  try {
+    return await navigator.serviceWorker.register('/sw.js');
+  } catch (_) {
+    return null;
+  }
+}
+
+function loadNotificationHistory() {
+  try {
+    const raw = localStorage.getItem(NOTIF_HISTORY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    notifications = Array.isArray(parsed) ? parsed.slice(0, 50) : [];
+  } catch (_) {
+    notifications = [];
+  }
+}
+
+function saveNotificationHistory() {
+  try { localStorage.setItem(NOTIF_HISTORY, JSON.stringify(notifications.slice(0, 50))); } catch (_) {}
+}
+
+async function restoreNotifyState() {
+  let saved = false;
+  try { saved = localStorage.getItem(NOTIFY_KEY) === '1'; } catch (_) {}
+  notifyEnabled = saved && notifySupported() && Notification.permission === 'granted';
+  loadNotificationHistory();
+  updateNotifyButton();
+  updateNotifyBadge();
+  renderNotifications();
+  if (notifyEnabled) swReg = await registerServiceWorker();
+}
+
+async function autoRequestNotifications() {
+  if (!notifySupported()) return;
+  let asked = false;
+  try { asked = localStorage.getItem(NOTIF_ASKED) === '1'; } catch (_) {}
+  if (asked || Notification.permission !== 'default') return;
+  try { localStorage.setItem(NOTIF_ASKED, '1'); } catch (_) {}
+  let perm = Notification.permission;
+  try { perm = await Notification.requestPermission(); } catch (_) { perm = 'denied'; }
+  if (perm === 'granted') {
+    notifyEnabled = true;
+    try { localStorage.setItem(NOTIFY_KEY, '1'); } catch (_) {}
+    swReg = await registerServiceWorker();
+    addNotification('Notifications enabled', 'You will be alerted when a campaign finishes.', 'setup');
+  }
+  updateNotifyButton();
+}
+
+async function toggleNotifyEnabled() {
+  if (!notifySupported()) { toast('Notifications are not supported in this browser', 'err'); return; }
+  if (notifyEnabled) {
+    notifyEnabled = false;
+    try { localStorage.setItem(NOTIFY_KEY, '0'); } catch (_) {}
+    updateNotifyButton();
+    toast('Notifications disabled', 'info');
+    return;
+  }
+  let perm = Notification.permission;
+  if (perm === 'default') {
+    try { perm = await Notification.requestPermission(); } catch (_) { perm = 'denied'; }
+  }
+  if (perm !== 'granted') { toast('Notification permission denied', 'err'); updateNotifyButton(); return; }
+  notifyEnabled = true;
+  try { localStorage.setItem(NOTIFY_KEY, '1'); } catch (_) {}
+  swReg = await registerServiceWorker();
+  updateNotifyButton();
+  toast('Notifications enabled', 'ok');
+  addNotification('Notifications enabled', 'You will be alerted when a campaign finishes.', 'setup');
+}
+
+function updateNotifyButton() {
+  const btn = document.getElementById('notifyBtn');
+  if (btn) {
+    btn.classList.toggle('on', notifyEnabled);
+    btn.title = notifyEnabled ? 'Notifications (on)' : 'Notifications';
+  }
+  const enableBtn = document.getElementById('notifEnableBtn');
+  if (enableBtn) {
+    enableBtn.textContent = notifyEnabled ? 'Disable' : 'Enable';
+    enableBtn.disabled = !notifySupported() && !notifyEnabled;
+  }
+}
+
+function addNotification(title, body, tag) {
+  notifications.unshift({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    title: title || 'Notification',
+    body: body || '',
+    tag: tag || 'transmit',
+    time: new Date().toISOString(),
+    viewed: false,
+  });
+  if (notifications.length > 50) notifications = notifications.slice(0, 50);
+  saveNotificationHistory();
+  updateNotifyBadge();
+  if (notifMenuOpen) renderNotifications();
+}
+
+function updateNotifyBadge() {
+  const badge = document.getElementById('notifCount');
+  if (!badge) return;
+  const n = notifications.filter(x => !x.viewed).length;
+  if (n > 0) {
+    badge.style.display = 'inline-block';
+    badge.textContent = n > 99 ? '99+' : String(n);
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function formatNotifTime(iso) {
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? '' : d.toLocaleString();
+}
+
+function renderNotifications() {
+  const list = document.getElementById('notifList');
+  if (!list) return;
+  if (!notifications.length) {
+    list.innerHTML = '<div class="notif-empty">No notifications yet</div>';
+    return;
+  }
+  list.innerHTML = notifications.map(n => `
+    <div class="notif-item">
+      <div class="nt">${escHtml(n.title)}</div>
+      ${n.body ? `<div class="nb">${escHtml(n.body)}</div>` : ''}
+      <div class="nm">${escHtml(formatNotifTime(n.time))}</div>
+    </div>`).join('');
+}
+
+function toggleNotifMenu() {
+  notifMenuOpen = !notifMenuOpen;
+  const menu = document.getElementById('notifMenu');
+  const btn = document.getElementById('notifyBtn');
+  if (menu) menu.classList.toggle('open', notifMenuOpen);
+  if (btn) btn.setAttribute('aria-expanded', String(notifMenuOpen));
+  if (notifMenuOpen) {
+    let changed = false;
+    notifications.forEach(n => { if (!n.viewed) { n.viewed = true; changed = true; } });
+    if (changed) saveNotificationHistory();
+    updateNotifyBadge();
+    renderNotifications();
+  }
+}
+
+function closeNotifMenu() {
+  notifMenuOpen = false;
+  document.getElementById('notifMenu')?.classList.remove('open');
+  document.getElementById('notifyBtn')?.setAttribute('aria-expanded', 'false');
+}
+
+function clearNotifications() {
+  notifications = [];
+  saveNotificationHistory();
+  updateNotifyBadge();
+  renderNotifications();
+}
+
+function notify(title, body, tag) {
+  addNotification(title, body, tag);
+  if (!notifyEnabled || !notifySupported() || Notification.permission !== 'granted') return;
+  const payload = { type: 'notify', title, body: body || '', tag: tag || 'transmit' };
+  try {
+    const reg = swReg || (typeof navigator !== 'undefined' && navigator.serviceWorker && navigator.serviceWorker.controller);
+    if (reg && reg.active) reg.active.postMessage(payload);
+    else if (reg && reg.postMessage) reg.postMessage(payload);
+    else new Notification(title, { body: payload.body, tag: payload.tag, icon: '/static/smtpmailer.png' });
+  } catch (_) {}
+}
+
+/* ---------- Campaign notifications ---------- */
+function notifiedState() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NOTIFIED_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) { return {}; }
+}
+
+function markNotified(key, id) {
+  const st = notifiedState();
+  st[key] = id;
+  try { localStorage.setItem(NOTIFIED_KEY, JSON.stringify(st)); } catch (_) {}
+}
+
+function campaignIsComplete(s) {
+  return !s.error && !s.stopped;
+}
+
+function notifyCampaignOutcome(s) {
+  if (s.error) { notify('Campaign error', s.error, 'transmit-done'); return; }
+  if (s.stopped) {
+    notify('Campaign unfinished', `${s.sent} sent · ${s.failed} failed · ${s.skipped || 0} skipped — stopped before finishing`, 'transmit-done');
+    return;
+  }
+  notify('Campaign complete', `${s.sent} sent · ${s.failed} failed · ${s.skipped || 0} skipped`, 'transmit-done');
+}
+
+async function resumeCampaign() {
+  let s;
+  try { s = await fetch(`${API}/api/campaign/status`).then(r => r.json()); } catch (_) { return; }
+  if (!s || !s.id) return;
+  const seen = notifiedState();
+  if (s.running) {
+    document.getElementById('campaignMonitor').style.display = 'block';
+    document.getElementById('sendBtn').disabled = true;
+    document.getElementById('stopBtn').style.display = 'inline-flex';
+    document.getElementById('stopBtn').disabled = false;
+    document.getElementById('postCampaignActions').style.display = 'none';
+    document.getElementById('retryBtn').style.display = 'none';
+    document.getElementById('logBox').innerHTML = '';
+    lastLogLen = 0;
+    lastSeq = 0;
+    document.getElementById('statusDot').classList.add('active');
+    document.getElementById('statusText').textContent = 'Sending…';
+    if (seen.runningId !== s.id) {
+      notify('Campaign in progress', `${s.processed || 0}/${s.total} processed — still running`, 'transmit-running');
+      markNotified('runningId', s.id);
+    }
+    clearInterval(pollTimer);
+    pollTimer = setInterval(pollStatus, 1000);
+    pollStatus();
+  } else if (s.done && !campaignIsComplete(s) && seen.doneId !== s.id) {
+    notifyCampaignOutcome(s);
+    markNotified('doneId', s.id);
+  }
 }
 
 /* ---------- Utilities ---------- */

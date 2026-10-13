@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+.venv/
+
+# Generated campaign artifacts
+results/
+results_*.csv
+sender_config.json
+
+# OS / editor
+.DS_Store

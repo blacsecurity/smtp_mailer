@@ -81,7 +81,10 @@ http://localhost:2000
 - 📁 Drag-and-drop CSV recipient upload
 - 💾 Saved sender profiles with create, edit, delete, and clear-all support
 - 📡 Live campaign execution with real-time send feedback and stop control
-- ✉️ Multipart plain-text + HTML emails for improved inbox deliverability
+- 🚀 Scalable engine — parallel worker pool (up to 32 connections), automatic reconnect and per-email retries, built for 50,000+ recipient campaigns
+- 🧷 Bounded live feed with paginated status updates and incremental `results/` CSV writes (constant memory)
+- ✉️ Multipart plain-text + HTML emails with `Date`, `Message-ID`, `Reply-To` and `List-Unsubscribe` headers
+- 🔔 Browser push notifications for campaign start, completion and errors
 - 🎭 Sender identity masking (From / Sender / Reply-To)
 - 🤖 AI-powered email template generation
 - 🔗 Shared `sender_config.json` with CLI interoperability
@@ -97,10 +100,46 @@ smtp_mailer/
 ├── README.md             # Project documentation
 ├── dashboard.png         # Dashboard screenshot
 ├── sender_config.json    # Saved SMTP profiles (auto-generated)
+├── results/              # Per-campaign delivery CSVs (auto-generated)
 └── static/
     ├── index.html        # Single-page web UI (HTML, CSS, JS)
+    ├── sw.js             # Service worker for push notifications
     └── smtpmailer.png    # App logo / asset
 ```
+
+---
+
+## Scaling to Large Campaigns
+
+The sending engine is built for high-volume lists:
+
+- **Workers** — open several SMTP connections in parallel (`1`–`32`). Each worker keeps its
+  own connection and reconnects automatically if the server drops it.
+- **Retries** — transient failures (connection resets and `4xx` replies) are retried with
+  exponential backoff; permanent `5xx` rejections are not retried.
+- **Bounded memory** — the live feed keeps only the most recent 1000 entries and the UI pulls
+  new entries incrementally, so a 50,000-recipient run does not accumulate in RAM.
+- **Incremental results** — every result is appended to `results/results_<timestamp>.csv` as it
+  happens, not held in memory until the end.
+
+For a 50k campaign, start with a low worker count and a small delay, then increase while watching
+your provider's rate limits. Bulk providers (Amazon SES, SendGrid, Mailgun, …) accept far more
+parallelism than mailbox providers such as Gmail or Outlook.
+
+---
+
+## Deliverability
+
+Technical best practices are already applied — `Date`, `Message-ID`, `Reply-To`, `Sender`,
+`List-Unsubscribe` + `List-Unsubscribe-Post`, a plain-text alternative and an envelope sender that
+matches your From address. **Inbox placement itself is decided by the receiving provider** and
+depends mainly on authentication you must configure at your DNS provider:
+
+- **SPF** — authorise your sending host/provider.
+- **DKIM** — sign the mail with a key whose public half is published at your domain.
+- **DMARC** — align SPF/DKIM and tell receivers how to treat failures.
+
+Send only to opted-in contacts, keep bounces low and use a consistent, warm sending domain.
 
 ---
 
