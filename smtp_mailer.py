@@ -1,10 +1,10 @@
-import json, os, csv, io, re, threading, time, random, smtplib, ssl, logging
+import json, os, csv, io, re, threading, time, random, smtplib, ssl, logging, html as html_lib
 from datetime import datetime
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.utils import formataddr
+from email.utils import formataddr, formatdate, make_msgid
 from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
 
@@ -14,24 +14,30 @@ CORS(app)
 CONFIG_FILE = "sender_config.json"
 DEFAULT_TEMPLATE = "<p>Hi {{.FirstName}},</p>\n<p>This email is for {{.Email}}.</p>"
 PROVIDERS = [
-    ("Gmail",               "smtp.gmail.com",                     465, "SSL"),
-    ("Gmail (STARTTLS)",    "smtp.gmail.com",                     587, "STARTTLS"),
-    ("Outlook / Office365", "smtp.office365.com",                 587, "STARTTLS"),
-    ("Yahoo",               "smtp.mail.yahoo.com",                465, "SSL"),
-    ("Yahoo (STARTTLS)",    "smtp.mail.yahoo.com",                587, "STARTTLS"),
-    ("SendGrid",            "smtp.sendgrid.net",                  587, "STARTTLS"),
-    ("Mailgun",             "smtp.mailgun.org",                   587, "STARTTLS"),
-    ("SMTP2GO",             "mail.smtp2go.com",                   587, "STARTTLS"),
-    ("SMTP2GO (SSL)",       "mail.smtp2go.com",                   465, "SSL"),
-    ("Amazon SES",          "email-smtp.us-east-1.amazonaws.com", 587, "STARTTLS"),
-    ("Amazon SES (SSL)",    "email-smtp.us-east-1.amazonaws.com", 465, "SSL"),
-    ("ProtonMail",          "smtp.proton.me",                     587, "STARTTLS"),
-    ("Zoho",                "smtp.zoho.com",                      587, "STARTTLS"),
-    ("Zoho (SSL)",          "smtp.zoho.com",                      465, "SSL"),
-    ("Custom SMTP",         None,                                 None, None),
+    ("Gmail",               "smtp.gmail.com",                     465, "SSL",      "https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png"),
+    ("Gmail (STARTTLS)",    "smtp.gmail.com",                     587, "STARTTLS", "https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png"),
+    ("Outlook / Office365", "smtp.office365.com",                 587, "STARTTLS", "outlook.com"),
+    ("Yahoo",               "smtp.mail.yahoo.com",                465, "SSL",      "yahoo.com"),
+    ("Yahoo (STARTTLS)",    "smtp.mail.yahoo.com",                587, "STARTTLS", "yahoo.com"),
+    ("SendGrid",            "smtp.sendgrid.net",                  587, "STARTTLS", "sendgrid.com"),
+    ("Mailgun",             "smtp.mailgun.org",                   587, "STARTTLS", "mailgun.com"),
+    ("SMTP2GO",             "mail.smtp2go.com",                   587, "STARTTLS", "smtp2go.com"),
+    ("SMTP2GO (SSL)",       "mail.smtp2go.com",                   465, "SSL",      "smtp2go.com"),
+    ("Amazon SES",          "email-smtp.us-east-1.amazonaws.com", 587, "STARTTLS", "aws.amazon.com"),
+    ("Amazon SES (SSL)",    "email-smtp.us-east-1.amazonaws.com", 465, "SSL",      "aws.amazon.com"),
+    ("ProtonMail",          "smtp.proton.me",                     587, "STARTTLS", "https://cdn.simpleicons.org/protonmail"),
+    ("Zoho",                "smtp.zoho.com",                      587, "STARTTLS", "zoho.com"),
+    ("Zoho (SSL)",          "smtp.zoho.com",                      465, "SSL",      "zoho.com"),
+    ("iCloud Mail",         "smtp.mail.me.com",                   587, "STARTTLS", "https://cdn.simpleicons.org/icloud"),
+    ("Postmark",            "smtp.postmarkapp.com",               587, "STARTTLS", "postmarkapp.com"),
+    ("SparkPost",           "smtp.sparkpostmail.com",             587, "STARTTLS", "https://cdn.simpleicons.org/sparkpost"),
+    ("Mandrill",            "smtp.mandrillapp.com",               587, "STARTTLS", "mandrillapp.com"),
+    ("Brevo",               "smtp-relay.brevo.com",               587, "STARTTLS", "https://cdn.simpleicons.org/brevo"),
+    ("Mailjet",             "in-v3.mailjet.com",                  587, "STARTTLS", "mailjet.com"),
+    ("Custom SMTP",         None,                                 None, None,    None),
 ]
 
-campaign_state = {"running": False, "log": [], "sent": 0, "failed": 0, "total": 0, "done": False, "error": None}
+campaign_state = {"running": False, "log": [], "sent": 0, "failed": 0, "total": 0, "done": False, "error": None, "failed_list": []}
 
 def load_config():
     if os.path.isfile(CONFIG_FILE):
@@ -92,29 +98,60 @@ def connect(host, port, security):
         server.ehlo()
     return server
 
+def html_to_text(value):
+    text = re.sub(r"(?is)<(script|style|head)[^>]*>.*?</\1>", "", value)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(p|div|h[1-6]|tr|li)>", "\n", text)
+    text = re.sub(r"(?s)<[^>]+>", "", text)
+    text = html_lib.unescape(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+def text_to_html(value):
+    return "<p>" + html_lib.escape(value).replace("\n\n", "</p><p>").replace("\n", "<br>") + "</p>"
+
 def build_message(sender_name, sender_email, recipient, subject, body, subtype, attachment_path=None):
-    msg = MIMEMultipart("alternative") if not attachment_path else MIMEMultipart("mixed")
-    msg["From"] = formataddr((sender_name, sender_email))
-    msg["To"] = formataddr((f"{recipient.get('FirstName','')} {recipient.get('LastName','')}".strip(), recipient["Email"]))
-    msg["Subject"] = subject
-    text_part = MIMEText(body, subtype, "utf-8")
+    domain = sender_email.split("@")[-1] if "@" in sender_email else None
     if attachment_path:
-        alt = MIMEMultipart("alternative")
-        alt.attach(text_part)
-        msg.attach(alt)
+        msg = MIMEMultipart("mixed")
+        container = MIMEMultipart("alternative")
+    else:
+        msg = MIMEMultipart("alternative")
+        container = msg
+
+    to_name = f"{recipient.get('FirstName','')} {recipient.get('LastName','')}".strip()
+    msg["From"] = formataddr((sender_name, sender_email))
+    msg["To"] = formataddr((to_name, recipient["Email"]))
+    msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=domain)
+    if sender_email:
+        msg["Reply-To"] = formataddr((sender_name, sender_email))
+        msg["Sender"] = formataddr((sender_name, sender_email))
+
+    if subtype == "plain":
+        text_body = body
+        html_body = text_to_html(body)
+    else:
+        text_body = html_to_text(body) or body
+        html_body = body
+
+    container.attach(MIMEText(text_body or " ", "plain", "utf-8"))
+    container.attach(MIMEText(html_body, "html", "utf-8"))
+
+    if attachment_path:
+        msg.attach(container)
         with open(attachment_path, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
         part.add_header("Content-Disposition", f'attachment; filename="{os.path.basename(attachment_path)}"')
         msg.attach(part)
-    else:
-        msg.attach(text_part)
     return msg
 
 @app.route("/api/providers")
 def get_providers():
-    return jsonify([{"name": p[0], "host": p[1], "port": p[2], "security": p[3]} for p in PROVIDERS])
+    return jsonify([{"name": p[0], "host": p[1], "port": p[2], "security": p[3], "logo": (p[4] if len(p) > 4 else None)} for p in PROVIDERS])
 
 @app.route("/api/config")
 def get_config():
@@ -187,13 +224,13 @@ def parse_recipients():
         f = request.files.get("file")
         if not f:
             return jsonify({"error": "No file"}), 400
-        content = f.read().decode("utf-8", errors="replace")
+        content = f.read().decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(content))
         for row in reader:
             rows.append({
-                "FirstName": row.get("FirstName", "").strip(),
-                "LastName": row.get("LastName", "").strip(),
-                "Email": row.get("Email", "").strip()
+                "FirstName": (row.get("FirstName") or "").strip(),
+                "LastName": (row.get("LastName") or "").strip(),
+                "Email": (row.get("Email") or "").strip()
             })
     elif mode == "paste":
         text = request.form.get("text", "")
@@ -228,7 +265,7 @@ def start_campaign():
         return jsonify({"error": "Campaign already running"}), 400
 
     data = request.json
-    campaign_state = {"running": True, "log": [], "sent": 0, "failed": 0, "total": 0, "done": False, "error": None}
+    campaign_state = {"running": True, "log": [], "sent": 0, "failed": 0, "total": 0, "done": False, "error": None, "failed_list": []}
 
     def run():
         global campaign_state
@@ -239,31 +276,44 @@ def start_campaign():
             security = s["security"]
             username = s["username"]
             password = s["password"]
-            sender_name = s["sender_name"]
-            sender_email = s["sender_email"]
+            sender_name = (s.get("sender_name") or "").strip()
+            sender_email = (s.get("sender_email") or "").strip()
             subject = s["subject"]
             recipients = s["recipients"]
             template = s.get("body", DEFAULT_TEMPLATE)
             subtype = s.get("email_format", "html")
             delay_range = parse_delay(s.get("delay", "1"))
 
+            if not sender_email or "@" not in sender_email or "." not in sender_email.split("@")[-1]:
+                campaign_state["error"] = "A valid Sender Email is required — recipients must see the sender identity."
+                campaign_state["log"].append({"type": "error", "msg": campaign_state["error"]})
+                return
+
             campaign_state["total"] = len(recipients)
             campaign_state["log"].append({"type": "info", "msg": f"Connecting to {host}:{port} [{security}]..."})
 
             server = connect(host, port, security)
             server.login(username, password)
-            campaign_state["log"].append({"type": "success", "msg": f"Authenticated as {username}"})
+            campaign_state["log"].append({"type": "success", "msg": f"Authenticated as {username} — sending as {sender_email}"})
 
             all_results = []
-            failed_recip = []
+            stopped = False
+            last_index = 0
 
             with server:
                 for i, recipient in enumerate(recipients, 1):
+                    last_index = i
+                    if not campaign_state["running"]:
+                        stopped = True
+                        break
                     email = recipient.get("Email", "")
-                    rname = f"{recipient.get('FirstName','')} {recipient.get('LastName','')}".strip() or email
+                    first = recipient.get("FirstName", "")
+                    last = recipient.get("LastName", "")
+                    rname = f"{first} {last}".strip() or email
                     ts = datetime.now().strftime("%H:%M:%S")
                     if not email:
                         campaign_state["log"].append({"type": "warn", "msg": f"[{i}/{len(recipients)}] Skipped — missing email"})
+                        all_results.append({"Email": "", "FirstName": first, "LastName": last, "Status": "skipped", "Error": "missing email", "Timestamp": ts})
                         continue
                     try:
                         body = render(template, recipient)
@@ -271,16 +321,27 @@ def start_campaign():
                         server.sendmail(sender_email, email, msg.as_string())
                         campaign_state["sent"] += 1
                         campaign_state["log"].append({"type": "sent", "msg": f"[{i}/{len(recipients)}] ✓ {rname} <{email}>"})
-                        all_results.append({"Email": email, "FirstName": recipient["FirstName"], "LastName": recipient["LastName"], "Status": "sent", "Error": "", "Timestamp": ts})
+                        all_results.append({"Email": email, "FirstName": first, "LastName": last, "Status": "sent", "Error": "", "Timestamp": ts})
                     except Exception as e:
                         campaign_state["failed"] += 1
                         campaign_state["log"].append({"type": "fail", "msg": f"[{i}/{len(recipients)}] ✗ {rname} <{email}> — {e}"})
-                        all_results.append({"Email": email, "FirstName": recipient["FirstName"], "LastName": recipient["LastName"], "Status": "failed", "Error": str(e), "Timestamp": ts})
-                        failed_recip.append(recipient)
+                        all_results.append({"Email": email, "FirstName": first, "LastName": last, "Status": "failed", "Error": str(e), "Timestamp": ts})
+                        campaign_state["failed_list"].append(recipient)
 
-                    if i < len(recipients):
+                    if i < len(recipients) and campaign_state["running"]:
                         lo, hi = delay_range
-                        time.sleep(random.uniform(lo, hi) if lo != hi else lo)
+                        wait = random.uniform(lo, hi) if lo != hi else lo
+                        while wait > 0 and campaign_state["running"]:
+                            step = min(0.2, wait)
+                            time.sleep(step)
+                            wait -= step
+
+            if stopped:
+                ts = datetime.now().strftime("%H:%M:%S")
+                for recipient in recipients[last_index - 1:]:
+                    email = recipient.get("Email", "")
+                    campaign_state["log"].append({"type": "warn", "msg": f"[skipped] {email} — campaign stopped"})
+                    all_results.append({"Email": email, "FirstName": recipient.get("FirstName", ""), "LastName": recipient.get("LastName", ""), "Status": "skipped", "Error": "campaign stopped", "Timestamp": ts})
 
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             results_filename = f"results_{stamp}.csv"
@@ -293,18 +354,18 @@ def start_campaign():
             cfg["last_campaign"] = {"profile": s.get("profile_name", ""), "subject": subject, "csv_path": "", "sent": campaign_state["sent"], "failed": campaign_state["failed"], "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
             save_config(cfg)
 
-            campaign_state["log"].append({"type": "done", "msg": f"Campaign complete — {campaign_state['sent']} sent, {campaign_state['failed']} failed. Results saved to {results_filename}"})
-            campaign_state["done"] = True
-            campaign_state["running"] = False
+            if stopped:
+                campaign_state["log"].append({"type": "warn", "msg": f"Campaign stopped — {campaign_state['sent']} sent, {campaign_state['failed']} failed. Results saved to {results_filename}"})
+            else:
+                campaign_state["log"].append({"type": "done", "msg": f"Campaign complete — {campaign_state['sent']} sent, {campaign_state['failed']} failed. Results saved to {results_filename}"})
 
         except smtplib.SMTPAuthenticationError:
             campaign_state["error"] = "Authentication failed. Check your username and password/API key."
             campaign_state["log"].append({"type": "error", "msg": campaign_state["error"]})
-            campaign_state["done"] = True
-            campaign_state["running"] = False
         except Exception as e:
             campaign_state["error"] = str(e)
             campaign_state["log"].append({"type": "error", "msg": f"Connection error: {e}"})
+        finally:
             campaign_state["done"] = True
             campaign_state["running"] = False
 
@@ -319,9 +380,9 @@ def campaign_status():
 @app.route("/api/campaign/stop", methods=["POST"])
 def stop_campaign():
     global campaign_state
-    campaign_state["running"] = False
-    campaign_state["done"] = True
-    campaign_state["log"].append({"type": "warn", "msg": "Campaign stopped by user."})
+    if campaign_state.get("running"):
+        campaign_state["running"] = False
+        campaign_state["log"].append({"type": "warn", "msg": "Stop requested — finishing current send..."})
     return jsonify({"ok": True})
 
 @app.route("/")
@@ -330,4 +391,4 @@ def index():
 
 if __name__ == "__main__":
     os.makedirs("static", exist_ok=True)
-    app.run(debug=False, port=5000)
+    app.run(debug=False, port=2000)

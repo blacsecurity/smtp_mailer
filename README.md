@@ -43,7 +43,7 @@ python smtp_mailer.py
 Once running, open your browser and navigate to:
 
 ```
-http://localhost:5000
+http://localhost:2000
 ```
 
 ---
